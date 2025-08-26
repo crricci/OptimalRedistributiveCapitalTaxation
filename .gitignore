@@ -1,0 +1,8 @@
+# OS
+.DS_Store
+
+# Julia artifacts that are large/derived (commit if you prefer full pinning)
+# Manifest.toml
+
+# Editor
+.vscode/
