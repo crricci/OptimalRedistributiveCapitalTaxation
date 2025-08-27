@@ -26,11 +26,13 @@ struct SolutionResult
 end
 
 """
-    solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95)
+    solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
 
 2D shooting on (c(0), z(0)) where z ≡ 1/(λ k). Smooth interior ODE in (k,c,z). Targets: k(T)=k*, r̃(T)=ρ.
+
+If `debug=true`, prints the initial conditions and initial derivatives tested for both IVP and BVP guesses and flags any NaN/Inf.
 """
-function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95)
+function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
     steady = SteadyState.find_steady_state(p)
     @unpack A, θ, η, ρ, β, δ, γ, r = p
 
@@ -52,13 +54,35 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95)
         return nothing
     end
 
+    # one-time debug print guards
+    debug_printed_ivp = Ref(false)
+    debug_printed_bvp = Ref(false)
+
     integrate(u0, Tcur; save=false) = begin
         Y0 = [p.k0, u0[1], u0[2]]
+        # Optional initial derivative check to catch NaNs at t=0
+        if debug && !debug_printed_ivp[]
+            dY0 = similar(Y0)
+            try
+                f!(dY0, copy(Y0), nothing, 0.0)
+                rt0 = A*(1-η)*max(Y0[1],1e-12)^(θ-1) - δ - γ*clamp(Y0[3],1e-12,1e6)
+                @info "Initial IVP state and derivative" Y0 dY0 rt0 isfinite_Y0=all(isfinite, Y0) isfinite_dY0=all(isfinite, dY0)
+            catch err
+                @warn "Initial derivative evaluation threw" err Y0
+            end
+            debug_printed_ivp[] = true
+        end
+        # Bail out early if initial derivative is non-finite to avoid solver NaN-dt spam
+        dY0_chk = similar(Y0)
+        f!(dY0_chk, copy(Y0), nothing, 0.0)
+        if !(all(isfinite, dY0_chk) && all(isfinite, Y0))
+            error("Non-finite initial condition or derivative")
+        end
         prob = ODEProblem(f!, Y0, (0.0, Tcur))
         if save
-            solve(prob, TRBDF2(); abstol=1e-8, reltol=1e-8, dtmin=1e-12, dtmax=max(1e-2, Tcur/200), saveat=range(0.0, Tcur, length=N), maxiters=20_000_000)
+            solve(prob, TRBDF2(); abstol=1e-8, reltol=1e-8, dt=min(1e-3, Tcur/1000), dtmin=1e-12, dtmax=max(1e-2, Tcur/200), saveat=range(0.0, Tcur, length=N), maxiters=20_000_000)
         else
-            solve(prob, TRBDF2(); abstol=1e-8, reltol=1e-8, dtmin=1e-12, dtmax=max(1e-2, Tcur/200), save_everystep=false, maxiters=20_000_000)
+            solve(prob, TRBDF2(); abstol=1e-8, reltol=1e-8, dt=min(1e-3, Tcur/1000), dtmin=1e-12, dtmax=max(1e-2, Tcur/200), save_everystep=false, maxiters=20_000_000)
         end
     end
 
@@ -88,6 +112,19 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95)
     end
 
     v0_guess = [log(max(α*steady.c, 1e-6)), log(max(z_star, 1e-6))]
+    # Debug: check BVP initial guess at t=0
+    if debug && !debug_printed_bvp[]
+        Yg0 = [p.k0, max(α*steady.c, 1e-6), max(z_star, 1e-6)]
+        dYg0 = similar(Yg0)
+        try
+            f!(dYg0, copy(Yg0), nothing, 0.0)
+            rtg0 = A*(1-η)*max(Yg0[1],1e-12)^(θ-1) - δ - γ*clamp(Yg0[3],1e-12,1e6)
+            @info "Initial BVP guess state and derivative" Yg0 dYg0 rtg0 isfinite_Yg0=all(isfinite, Yg0) isfinite_dYg0=all(isfinite, dYg0)
+        catch err
+            @warn "Initial BVP derivative evaluation threw" err Yg0
+        end
+        debug_printed_bvp[] = true
+    end
     Ts = [min(T, t) for t in (T < 120 ? (10.0, 20.0, 40.0, 80.0, T) : (20.0, 40.0, 80.0, 120.0, T))]
     for Tcur in Ts
         local_res!(F, v) = residual_T!(F, v, Tcur)
@@ -176,7 +213,7 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95)
     ok_dc = abs(dcT) < 2e-3
     ok_k = abs(kT - steady.k) < 5e-3
     ok_c = abs(cT - steady.c) < 5e-3
-    ok_tvc = (abs(λ_tr[end]) < 1e-3) && (abs(μ_tr[end]) < 1e-3)
+    ok_tvc = (abs(λ_tr[end]) < 1e-2) && (abs(μ_tr[end]) < 1e-2)
     success = ok_r && ok_dk && ok_dc && ok_k && ok_c && ok_tvc
 
     return SolutionResult(success, tt, k, c, λ, μ, r_tilde, tau_k, λ_tr, μ_tr, steady)

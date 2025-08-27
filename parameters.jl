@@ -13,6 +13,6 @@ using Parameters
     γ::Float64 = 0.5      # Redistribution cost parameter
     r::Float64 = 0.05     # Interest rate
     k0::Float64 = 2.0     # Initial capital
-    T::Float64 = 100.0   # Time horizon for solution
+    T::Float64 = 300.0   # Time horizon for solution
 end
 
