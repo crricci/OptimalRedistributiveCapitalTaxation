@@ -1,6 +1,12 @@
 # Visualization functions for Optimal Redistributive Capital Taxation Model
 
+# Force non-interactive backend so figures are not shown
+if get(ENV, "MPLBACKEND", "") == ""
+    ENV["MPLBACKEND"] = "Agg"
+end
+
 using PyPlot
+PyPlot.ioff()  # ensure interactive display is off
 using Statistics
 using DelimitedFiles
 
@@ -30,69 +36,79 @@ function plot_main_solution(result, title, filename; force::Bool=false)
     tau_k_plot = result.tau_k[half_indices]
     λ_transversality_plot = result.λ_transversality[half_indices]
     μ_transversality_plot = result.μ_transversality[half_indices]
+    c_transversality_plot = result.c_transversality[half_indices]
     
-    # Create 8 subplots in vertical layout (8 rows, 1 column)
-    fig, ax = PyPlot.subplots(8, 1, figsize=(12, 16))
-    fig.suptitle(title * " (0 to T/2)", fontsize=18)
+    # Create 9 subplots in vertical layout (9 rows, 1 column)
+    fig, ax = PyPlot.subplots(9, 1, figsize=(12, 18))
+    fig.suptitle(title, fontsize=18, y=0.98)
     
     # Capital Trajectory (c as State) - Blue line
     ax[1].plot(t_plot, k_plot, "b-", linewidth=2)
-    ax[1].set_title("Capital Trajectory (c as State)")
+    ax[1].set_title("Capital k Trajectory")
     ax[1].set_xlabel("Time")
-    ax[1].set_ylabel("Capital k(t)")
+    ax[1].set_ylabel(" ")
     ax[1].grid(true)
     
     # Consumption Trajectory (State Variable) - Purple/magenta line
     ax[2].plot(t_plot, c_plot, "m-", linewidth=2)
-    ax[2].set_title("Consumption Trajectory (State Variable)")
+    ax[2].set_title("Consumption c Trajectory")
     ax[2].set_xlabel("Time")
-    ax[2].set_ylabel("Consumption c(t)")
+    ax[2].set_ylabel(" ")
     ax[2].grid(true)
     
     # Costate λ Trajectory - Red line
     ax[3].plot(t_plot, λ_plot, "r-", linewidth=2)
     ax[3].set_title("Costate λ Trajectory")
     ax[3].set_xlabel("Time")
-    ax[3].set_ylabel("Costate λ(t)")
+    ax[3].set_ylabel(" ")
     ax[3].grid(true)
     
     # Costate μ Trajectory - Orange line
     ax[4].plot(t_plot, μ_plot, color="orange", linewidth=2)
     ax[4].set_title("Costate μ Trajectory")
     ax[4].set_xlabel("Time")
-    ax[4].set_ylabel("Costate μ(t)")
+    ax[4].set_ylabel(" ")
     ax[4].grid(true)
     
     # Effective Interest Rate - Green line
     ax[5].plot(t_plot, r_tilde_plot, "g-", linewidth=2)
-    ax[5].set_title("Effective Interest Rate")
+    ax[5].set_title("Effective Interest Rate r̃")
     ax[5].set_xlabel("Time")
-    ax[5].set_ylabel("Effective Interest Rate")
+    ax[5].set_ylabel(" ")
     ax[5].grid(true)
     
     # Capital Tax Rate - Cyan line
     ax[6].plot(t_plot, tau_k_plot, "c-", linewidth=2)
-    ax[6].set_title("Capital Tax Rate")
+    ax[6].set_title("Capital Tax Rate τₖ")
     ax[6].set_xlabel("Time")
-    ax[6].set_ylabel("Capital Tax Rate")
+    ax[6].set_ylabel(" ")
     ax[6].grid(true)
     
     # λ Transversality Condition - Magenta line
     ax[7].plot(t_plot, λ_transversality_plot, "m-", linewidth=2)
     ax[7].set_title("λ Transversality Condition")
     ax[7].set_xlabel("Time")
-    ax[7].set_ylabel("λ Transversality")
+    ax[7].set_ylabel(" ")
     ax[7].grid(true)
     
     # μ Transversality Condition - Red line
     ax[8].plot(t_plot, μ_transversality_plot, "r-", linewidth=2)
     ax[8].set_title("μ Transversality Condition")
     ax[8].set_xlabel("Time")
-    ax[8].set_ylabel("μ Transversality")
+    ax[8].set_ylabel(" ")
     ax[8].grid(true)
+
+    # c Transversality Condition - Black dashed line
+    ax[9].plot(t_plot, c_transversality_plot, "k--", linewidth=2)
+    ax[9].set_title("c Transversality Condition")
+    ax[9].set_xlabel("Time")
+    ax[9].set_ylabel(" ")
+    ax[9].grid(true)
     
-    PyPlot.tight_layout()
+    # Leave space for suptitle to avoid overlap with first subplot title
+    PyPlot.tight_layout(rect=(0, 0, 1, 0.96))
+    # Save without showing
     PyPlot.savefig(filename, dpi=300, bbox_inches="tight")
-    PyPlot.close(fig)  # Close the figure to prevent display
+    PyPlot.close(fig)
     println("✓ Plot saved as '$filename'")
 end

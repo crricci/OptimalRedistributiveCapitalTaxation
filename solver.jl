@@ -22,19 +22,21 @@ struct SolutionResult
     tau_k::Vector{Float64}
     λ_transversality::Vector{Float64}
     μ_transversality::Vector{Float64}
+    c_transversality::Vector{Float64}
     steady::SteadyStateResult
 end
 
 """
-    solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
+    solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, progress::Bool=true)
 
 2D shooting on (c(0), z(0)) where z ≡ 1/(λ k). Smooth interior ODE in (k,c,z). Targets: k(T)=k*, r̃(T)=ρ.
 
 If `debug=true`, prints the initial conditions and initial derivatives tested for both IVP and BVP guesses and flags any NaN/Inf.
 """
-function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
+function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, progress::Bool=true)
     steady = SteadyState.find_steady_state(p)
     @unpack A, θ, η, ρ, β, δ, γ, r = p
+    progress && println("Solving ORCT (T=$(round(T,digits=2)), k0=$(round(p.k0,digits=4))) …")
 
     function f!(dY, Y, p_local, t)
         k, c, z = Y
@@ -126,7 +128,9 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
         debug_printed_bvp[] = true
     end
     Ts = [min(T, t) for t in (T < 120 ? (10.0, 20.0, 40.0, 80.0, T) : (20.0, 40.0, 80.0, 120.0, T))]
+    progress && println("→ Shooting continuation in $(length(Ts)) stage(s): ", join(string.(round.(Ts; digits=2)), ", "))
     for Tcur in Ts
+        progress && println("  • Stage T=$(round(Tcur,digits=2))")
         local_res!(F, v) = residual_T!(F, v, Tcur)
         # Multi-start around current guess and steady-state-based guess
         seeds = Vector{Vector{Float64}}()
@@ -178,12 +182,15 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
         return nothing
     end
     prob_bvp = BVProblem(f!, bc!, guessY, tspan)
+    progress && println("→ Solving BVP …")
     sol_bvp = solve(prob_bvp, MIRK6(), dt = max(T/400, 0.02), abstol=1e-9, reltol=1e-9)
     if sol_bvp.retcode == SciMLBase.ReturnCode.Success
+        progress && println("  ✓ BVP converged")
         tt = Array(sol_bvp.t)
         Y = reduce(hcat, sol_bvp.u)
         k = vec(Y[1, :]); c = vec(Y[2, :]); z = vec(Y[3, :])
     else
+        progress && println("  ↪ BVP failed, falling back to IVP integrate …")
         u0_final = [exp(v0_guess[1]), exp(v0_guess[2])]
         sol = integrate(u0_final, T; save=true)
         tt = Array(sol.t)
@@ -196,11 +203,12 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
     λ = 1.0 ./ (z .* ksafe)
     μ = (csafe .^ (-β) .- λ) ./ ρ
 
-    tau_k = similar(k); λ_tr = similar(k); μ_tr = similar(k)
+    tau_k = similar(k); λ_tr = similar(k); μ_tr = similar(k); c_tr = similar(k)
     for i in eachindex(k)
         tau_k[i] = r > 0 ? max(0.0, 1.0 - r_tilde[i]/r) : 0.0
         λ_tr[i] = exp(-ρ*tt[i]) * λ[i] * k[i]
         μ_tr[i] = exp(-ρ*tt[i]) * μ[i] * c[i]
+        c_tr[i] = exp(-ρ*tt[i]) * (csafe[i]^(-β)) * k[i]
     end
 
     # Success checks at terminal time
@@ -214,9 +222,11 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false)
     ok_k = abs(kT - steady.k) < 5e-3
     ok_c = abs(cT - steady.c) < 5e-3
     ok_tvc = (abs(λ_tr[end]) < 1e-2) && (abs(μ_tr[end]) < 1e-2)
-    success = ok_r && ok_dk && ok_dc && ok_k && ok_c && ok_tvc
+    ok_ctvc = abs(c_tr[end]) < 1e-2
+    success = ok_r && ok_dk && ok_dc && ok_k && ok_c && ok_tvc && ok_ctvc
+    progress && println("Done (success=$(success))")
 
-    return SolutionResult(success, tt, k, c, λ, μ, r_tilde, tau_k, λ_tr, μ_tr, steady)
+    return SolutionResult(success, tt, k, c, λ, μ, r_tilde, tau_k, λ_tr, μ_tr, c_tr, steady)
 end
 
 end # module
