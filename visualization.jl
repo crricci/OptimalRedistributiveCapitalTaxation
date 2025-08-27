@@ -5,14 +5,14 @@ using Statistics
 using DelimitedFiles
 
 """
-    plot_main_solution(result, title, filename)
+    plot_main_solution(result, title, filename; force=false)
 
 Create the main solution plot with vertical layout (8 plots) matching the uploaded image layout.
-Only saves to PNG, does not display.
+Only saves to PNG, does not display. Set `force=true` to plot even if `result.success` is false.
 """
-function plot_main_solution(result, title, filename)
-    if !result.success
-        println("Cannot visualize - solution failed to converge")
+function plot_main_solution(result, title, filename; force::Bool=false)
+    if !result.success && !force
+        println("Cannot visualize - solution failed to converge (set force=true to override)")
         return
     end
     
