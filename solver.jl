@@ -8,6 +8,7 @@ using Roots
 using NLsolve
 using LinearAlgebra
 using Parameters
+
 include("steady_state.jl")
 using .SteadyState
 
@@ -205,7 +206,9 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, 
 
     tau_k = similar(k); λ_tr = similar(k); μ_tr = similar(k); c_tr = similar(k)
     for i in eachindex(k)
-        tau_k[i] = r > 0 ? max(0.0, 1.0 - r_tilde[i]/r) : 0.0
+        # Enforce definition: r_tilde = (1 - tau_k) * (r - δ) => tau_k = 1 - r_tilde/(r - δ)
+        denom = (r - δ)
+        tau_k[i] = abs(denom) > 1e-12 ? (1.0 - r_tilde[i] / denom) : 0.0
         λ_tr[i] = exp(-ρ*tt[i]) * λ[i] * k[i]
         μ_tr[i] = exp(-ρ*tt[i]) * μ[i] * c[i]
         c_tr[i] = exp(-ρ*tt[i]) * (csafe[i]^(-β)) * k[i]

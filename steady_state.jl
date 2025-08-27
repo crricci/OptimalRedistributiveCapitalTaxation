@@ -60,7 +60,12 @@ function find_steady_state(p)
     r_tilde = rstar
 
     fnames = fieldnames(typeof(p))
-    tau_k = ((:r in fnames) && p.r > 0) ? max(0.0, 1.0 - r_tilde / p.r) : 0.0
+    if (:r in fnames) && (:δ in fnames)
+        denom = (p.r - p.δ)
+        tau_k = abs(denom) > 1e-12 ? (1.0 - r_tilde / denom) : 0.0
+    else
+        tau_k = 0.0
+    end
 
     return SteadyStateResult(kstar, c, λ, μ, r_tilde, x, tau_k)
 end
