@@ -2,12 +2,12 @@
 
 using Pkg
 try
-    @eval using DifferentialEquations, BoundaryValueDiffEq, Roots, Parameters, PyPlot, NLsolve
+    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve
 catch
     # Install needed packages if missing
     Pkg.activate(".")
-    Pkg.add(["DifferentialEquations", "BoundaryValueDiffEq", "Roots", "Parameters", "PyPlot", "NLsolve"])
-    @eval using DifferentialEquations, BoundaryValueDiffEq, Roots, Parameters, PyPlot, NLsolve
+    Pkg.add(["DifferentialEquations", "BoundaryValueDiffEq", "Parameters", "PyPlot", "NLsolve"])
+    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve
 end
 
 include("parameters.jl")

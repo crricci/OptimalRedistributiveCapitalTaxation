@@ -7,7 +7,6 @@ end
 
 using PyPlot
 PyPlot.ioff()  # ensure interactive display is off
-using Statistics
 using DelimitedFiles
 
 """

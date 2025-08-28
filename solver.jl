@@ -4,7 +4,6 @@ export SolutionResult, solve_orct
 
 using DifferentialEquations
 using BoundaryValueDiffEq
-using Roots
 using NLsolve
 using LinearAlgebra
 using Parameters
