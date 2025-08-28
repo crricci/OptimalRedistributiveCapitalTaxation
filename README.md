@@ -1,38 +1,66 @@
-# Optimal Redistributive Capital Taxation (ORCT) - Numerical Solver
+# Optimal Redistributive Capital Taxation (ORCT) – Numerical tools
 
-This project solves the forward-backward system derived from the Pontryagin Maximum Principle for the ORCT model, computes the steady state, and plots the optimal trajectory.
+Julia code to compute the analytical steady state, solve the dynamic ORCT system, assess stability, and run welfare scans across γ. Plots are saved (not shown on screen).
 
-Contents:
-- `parameters.jl` — parameter struct and defaults
-- `steady_state.jl` — computes the positive-interest steady state (r̃* = ρ)
-- `solver.jl` — BVP collocation solver with r̃ = max{0, ·}
-- `visualization.jl` — plotting helper (`plot_main_solution`)
-- `main.jl` — runner script
+Contents
+- `parameters.jl` – parameter struct and defaults
+- `steady_state.jl` – analytical steady state (r̃* = ρ) and derived values
+- `solver.jl` – interior ODE in (k, c, z) with z ≡ 1/(λ k), BVP collocation + IVP fallback, diagnostics
+- `visualization.jl` – save-only plotting (`plot_main_solution`)
+- `main.jl` – runner and utilities (welfare scan, linearizations)
 
-## Steady state (r̃* > 0 regime)
+## Model summary
 
-Let r̃* = ρ. Define for k>0:
-- c(k) = ρ k + A η k^θ
-- x(k) = A(1−η)k^θ − (δ + ρ)k
-- λ(k) = γ / (k [A(1−η)k^{θ−1} − δ − ρ])
-- μ(k) = (c(k)^{−β} − λ(k)) / ρ
+States: (k, c, z) with z = 1/(λ k). Derived: λ = 1/(z k), μ = (c^{−β} − λ)/ρ, x = γ z k.
 
-The intratemporal condition implies the scalar equation in k:
-  F(k) = λ(k) + μ(k) c(k)/(β k) − γ/x(k) = 0
+Effective return and ODEs (interior path):
+- r̃ = A(1−η) k^{θ−1} − δ − γ z
+- k̇ = r̃ k + A η k^θ − c
+- ċ = (c/β) (r̃ − ρ)
+- ż = − z [ ρ + A(1−θ) k^{θ−1} − γ z − c/k ]
 
-We solve F(k)=0 for k*, then obtain c*, λ*, μ* from the formulas above.
+Capital tax rate along the path: τₖ = 1 − r̃/(r − δ) (guarded if r ≈ δ). 
 
-## How to run
+## Steady state (positive-interest regime r̃* = ρ)
 
-Run the solver and plot:
+- k* = (A θ / (ρ + δ))^{1/(1−θ)}
+- c* = ρ k* + A η (k*)^θ
+- x* = A(1−η) (k*)^θ − (δ + ρ) k*
+- λ* = γ / (k* [A(1−η) (k*)^{θ−1} − δ − ρ])
+- μ* = ( (c*)^{−β} − λ* ) / ρ
+- τₖ* = 1 − r̃*/(r − δ) with r̃* = ρ
+
+Interior feasibility at k*: A(1−η) (k*)^{θ−1} − δ − ρ > 0 and x* > 0.
+
+## Solver and diagnostics
+
+- Method: continuation + BVP collocation (MIRK6) satisfying k(0)=k0, k(T)=k*, and ċ(T)=0 (⇒ r̃(T)=ρ); IVP shooting fallback.
+- Guards: positivity for k, c, z; derivative clamping; safe powers; small initial dt.
+- Transversality diagnostics: e^{−ρt} λ k, e^{−ρt} μ c, and e^{−ρt} c^{−β} k → 0. 
+- Success thresholds (terminal): |r̃−ρ|, |k̇|, |ċ|, |k−k*|, |c−c*| small; TVCs < 1e−2.
+
+## Running
+
+Plots for two initial conditions (saved only):
 
 ```bash
 julia --project=. main.jl
 ```
 
-Output: `solution.png` in the project root. The plot shows only [0, T/2] per `visualization.jl`.
+Output: `solution (k0=2.0).png`, `solution (k0=4.0).png`.
 
-## Notes
-- The solver is a BVP on [0,T] with `T` taken from `ModelParams` (default 1000). It enforces `k(0)=k0` and terminal conditions approximating transversality and the intratemporal/corner condition at T.
-- The kink r̃ = max{0, ·} is handled pointwise. If the solution ends in the corner at T, the boundary condition enforces r̃(T)=0; otherwise it enforces the intratemporal equality.
-- Ensure parameters imply a valid positive-interest steady state: A(1−η)k^{θ−1} − δ − ρ > 0 and x(k) > 0 at k=k*.
+Welfare scan over γ (saves CSV, no plots):
+
+```julia
+julia --project=. -e 'include("main.jl"); run_gamma_welfare_scan()'
+```
+
+Details: computes W = ∫₀ᵀ [γ log x(t) + c(t)^{1−β}/(1−β)] e^{−ρ t} dt with x = γ/λ and trapezoidal quadrature. Use `limit=` to do a subset; results saved to `welfare_gamma_scan.csv`.
+
+Stability (eigenvalues of linearization):
+
+```julia
+julia --project=. -e 'include("main.jl"); steady_linearization_eigs_kclm()'    # (k,c,λ,μ)
+```
+
+Note: μ is recovered from the intratemporal FOC μ = (c^{−β} − λ)/ρ along interior paths; we keep (k,c,z) as states for numerical robustness.

@@ -200,8 +200,9 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, 
     end
     ksafe = max.(k, 1e-12)
     csafe = max.(c, 1e-12)
-    r_tilde = A .* (1 .- η) .* ksafe .^ (θ .- 1) .- δ .- γ .* z
-    λ = 1.0 ./ (z .* ksafe)
+    zsafe = clamp.(z, 1e-12, 1e6)
+    r_tilde = A .* (1 .- η) .* ksafe .^ (θ .- 1) .- δ .- γ .* zsafe
+    λ = 1.0 ./ (zsafe .* ksafe)
     μ = (csafe .^ (-β) .- λ) ./ ρ
 
     tau_k = similar(k); λ_tr = similar(k); μ_tr = similar(k); c_tr = similar(k)
@@ -216,8 +217,9 @@ function solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, 
 
     # Success checks at terminal time
     kT = k[end]; cT = c[end]; zT = z[end]
-    rT = A*(1-η)*max(kT,1e-12)^(θ-1) - δ - γ*max(zT,1e-12)
-    dkT = rT*kT + A*η*kT^θ - cT
+    kTs = max(kT, 1e-12); zTs = max(zT, 1e-12)
+    rT = A*(1-η)*kTs^(θ-1) - δ - γ*zTs
+    dkT = rT*kT + A*η*kTs^θ - cT
     dcT = (cT/β) * (rT - ρ)
     ok_r = abs(rT - ρ) < 2e-3
     ok_dk = abs(dkT) < 2e-3

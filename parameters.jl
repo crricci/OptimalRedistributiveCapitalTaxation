@@ -11,7 +11,7 @@ using Parameters
     β::Float64 = 0.75     # Inverse elasticity of substitution
     δ::Float64 = 0.1      # Depreciation rate
     γ::Float64 = 0.5      # Redistribution cost parameter
-    r::Float64 = 0.05     # Interest rate
+    r::Float64 = 0.15     # Interest rate
     k0::Float64 = 2.0     # Initial capital
     T::Float64 = 300.0   # Time horizon for solution
 end
