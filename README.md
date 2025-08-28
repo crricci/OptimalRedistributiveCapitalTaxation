@@ -6,7 +6,7 @@ Contents
 - `parameters.jl` – parameter struct and defaults
 - `steady_state.jl` – analytical steady state (r̃* = ρ) and derived values
 - `solver.jl` – interior ODE in (k, c, z) with z ≡ 1/(λ k), BVP collocation + IVP fallback, diagnostics
-- `visualization.jl` – save-only plotting (`plot_main_solution`)
+- `visualization.jl` – save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
 - `main.jl` – runner and utilities (welfare scan, linearizations)
 
 ## Model summary
@@ -56,6 +56,14 @@ julia --project=. -e 'include("main.jl"); run_gamma_welfare_scan()'
 ```
 
 Details: computes W = ∫₀ᵀ [γ log x(t) + c(t)^{1−β}/(1−β)] e^{−ρ t} dt with x = γ/λ and trapezoidal quadrature. Use `limit=` to do a subset; results saved to `welfare_gamma_scan.csv`.
+
+Plot welfare vs γ from the saved CSV (square figure, save-only):
+
+```julia
+julia --project=. -e 'include("visualization.jl"); plot_welfare_vs_gamma()'
+```
+
+Output: `welfare_vs_gamma.png`.
 
 Stability (eigenvalues of linearization):
 
