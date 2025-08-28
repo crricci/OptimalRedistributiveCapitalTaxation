@@ -11,7 +11,7 @@ Contents
 
 ## Original model
 
-$$
+```math
 \begin{cases}
 \lambda + \frac{\mu c}{\beta k} = \frac{\gamma}{x} & \text{for } \tilde{r} > 0 \\
 \dot{k} = \tilde{r} k + A \eta k^{\theta} - c & \text{State eq. for capital} \\
@@ -23,8 +23,7 @@ x = A(1-\eta)k^{\theta} - (\delta + \tilde{r})k & \text{Definition of } x \\
 \lim_{t \to \infty} e^{-\rho t} \lambda(t) k(t) = 0 \quad \text{and} \quad \lim_{t \to \infty} e^{-\rho t} \mu(t) c(t) = 0 & \text{Transversality conditions}\\
 \tilde{r} = \max \left\{ 0,  A(1-\eta)k^{\theta-1} - \delta - \frac{\gamma}{\lambda k} \right\}
 \end{cases}
-$$
-
+```
 ## Model summary
 
 States: (k, c, z) with z = 1/(λ k). Derived: λ = 1/(z k), μ = (c^{−β} − λ)/ρ, x = γ z k.
