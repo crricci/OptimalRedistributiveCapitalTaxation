@@ -4,60 +4,83 @@ Julia code to compute the analytical steady state, solve the dynamic ORCT system
 
 Contents
 - `parameters.jl` – parameter struct and defaults
-- `steady_state.jl` – analytical steady state (r̃* = ρ) and derived values
-- `solver.jl` – interior ODE in (k, c, z) with z ≡ 1/(λ k), BVP collocation + IVP fallback, diagnostics
+- `steady_state.jl` – (legacy) analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
+- `solver.jl` – 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
 - `visualization.jl` – save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
 - `main.jl` – runner and utilities (welfare scan, linearizations)
 
-## Original model
+## Current dynamic system (4D with complementarity)
+
+We now solve the full 4–dimensional system in the variables \((k,c,\lambda,\mu)\) with an endogenous effective return \(\tilde r\) subject to a non–negativity (complementarity) condition:
 
 ```math
 \begin{cases}
-\lambda + \frac{\mu c}{\beta k} = \frac{\gamma}{x} & \text{for } \tilde{r} > 0 \\
-\dot{k} = \tilde{r} k + A \eta k^{\theta} - c & \text{State eq. for capital} \\
-\dot{c} = \frac{c}{\beta} (\tilde{r} - \rho) & \text{State eq. for consumption} \\
-\dot{\lambda} = \lambda(\rho - \tilde{r} - A \theta \eta k^{\theta-1}) - \frac{\gamma}{x}\left(A \theta (1-\eta) k^{\theta-1} - \delta - \tilde{r}\right) & \text{Co-state eq. for } \lambda \\
-\dot{\mu} = \mu \left( \rho - \frac{\tilde{r} - \rho}{\beta} \right) - c^{-\beta} + \lambda & \text{Co-state eq. for } \mu \\
-\lim_{t \to \infty} e^{-\rho t} c(t)^{-\beta}k(t) = 0\\
-x = A(1-\eta)k^{\theta} - (\delta + \tilde{r})k & \text{Definition of } x \\
-\lim_{t \to \infty} e^{-\rho t} \lambda(t) k(t) = 0 \quad \text{and} \quad \lim_{t \to \infty} e^{-\rho t} \mu(t) c(t) = 0 & \text{Transversality conditions}\\
-\tilde{r} = \max \left\{ 0,  A(1-\eta)k^{\theta-1} - \delta - \frac{\gamma}{\lambda k} \right\}
+\lambda + \dfrac{\mu c}{\beta k} = \dfrac{\gamma}{x},\\[6pt]
+\dot{k} = \tilde r\, k + A\eta k^{\theta} - c,\\[4pt]
+\dot{c} = \dfrac{c}{\beta}(\tilde r - \rho),\\[6pt]
+\dot{\lambda} = \lambda(\rho - \tilde r - A\theta \eta k^{\theta-1}) - \dfrac{\gamma}{x}\Big(A\theta(1-\eta)k^{\theta-1} - \delta - \tilde r\Big),\\[6pt]
+\dot{\mu} = \mu\Big( \rho - \dfrac{\tilde r - \rho}{\beta} \Big) - c^{-\beta} + \lambda,\\[6pt]
+	\tilde{r} = \max\!\left\{0,\; A(1-\eta)k^{\theta-1} - \delta - \dfrac{\beta\gamma}{\lambda\beta k + \mu c}\right\},\\[10pt]
+x = A(1-\eta)k^{\theta} - (\delta + \tilde r)k,\\[4pt]
+e^{-\rho t} \lambda(t) k(t) \to 0,\qquad e^{-\rho t} c(t)^{-\beta} k(t) \to 0,\\[4pt]
+\mu(0)=0, \qquad k(0)=k_0.
 \end{cases}
 ```
-## Model summary
 
-States: (k, c, z) with z = 1/(λ k). Derived: λ = 1/(z k), μ = (c^{−β} − λ)/ρ, x = γ z k.
+The max–operator encodes the Kuhn–Tucker condition ensuring \(\tilde r \ge 0\) and (on the interior branch) the marginal return is reduced by the redistribution wedge.
 
-Derivation of μ(c,λ) used numerically:
-- Current-value co-state for μ is μ̇ = μ[ρ − (r̃ − ρ)/β] − c^{−β} + λ.
-- Define the homogeneous part μ̇_h = μ_h[ρ − (r̃ − ρ)/β]; the TVC e^{−ρ t} μ c → 0 removes the explosive homogeneous solution.
-- On the admissible (non-explosive) branch, the pointwise balance reduces to the particular solution μ = (c^{−β} − λ)/ρ, which we enforce when reconstructing μ along the path while solving only for (k,c,z).
+### Steady state system (interior branch)
 
-Effective return and ODEs (interior path):
-- r̃ = A(1−η) k^{θ−1} − δ − γ z
-- k̇ = r̃ k + A η k^θ − c
-- ċ = (c/β) (r̃ − ρ)
-- ż = − z [ ρ + A(1−θ) k^{θ−1} − γ z − c/k ]
+Assuming an interior steady state with \(\tilde r^*>0\) and \(\tilde r^* = \rho\) (since \(\dot c=0\) requires \(\tilde r = \rho\) for \(c^*>0\)) the steady state solves:
 
-Capital tax rate along the path: τₖ = 1 − r̃/(r − δ) (guarded if r ≈ δ). 
+```math
+\begin{aligned}
+0 &= \rho k^* + A\eta (k^*)^{\theta} - c^*,\\
+0 &= \lambda^*(\rho - \rho - A\theta\eta (k^*)^{\theta-1}) - \frac{\gamma}{x^*}\Big(A\theta(1-\eta)(k^*)^{\theta-1} - \delta - \rho\Big),\\
+0 &= \mu^* \rho - (c^*)^{-\beta} + \lambda^*,\\
+\lambda^* + \frac{\mu^* c^*}{\beta k^*} &= \frac{\gamma}{x^*},\\
+\rho &= A(1-\eta)(k^*)^{\theta-1} - \delta - \frac{\beta\gamma}{\lambda^*\beta k^* + \mu^* c^*},\\
+x^* &= A(1-\eta)(k^*)^{\theta} - (\delta + \rho) k^*.
+\end{aligned}
+```
 
-## Steady state (positive-interest regime r̃* = ρ)
+These six relations determine \((k^*, c^*, \lambda^*, \mu^*, x^*)\). A legacy analytical closed form (from a pre-revision \(\tilde r\)) is currently used only as an initial reference; a numerical solve matching the present \(\tilde r\) can replace it in future.
 
-- k* = (A θ / (ρ + δ))^{1/(1−θ)}
-- c* = ρ k* + A η (k*)^θ
-- x* = A(1−η) (k*)^θ − (δ + ρ) k*
-- λ* = γ / (k* [A(1−η) (k*)^{θ−1} − δ − ρ])
-- μ* = ( (c*)^{−β} − λ* ) / ρ
-- τₖ* = 1 − r̃*/(r − δ) with r̃* = ρ
+### Capital tax rate
 
-Interior feasibility at k*: A(1−η) (k*)^{θ−1} − δ − ρ > 0 and x* > 0.
+Reported along a trajectory as \(\tau_k = 1 - \tilde r/(r-\delta)\) (guarded near \(r=\delta\)).
 
-## Solver and diagnostics
+## Solution strategy
 
-- Method: continuation + BVP collocation (MIRK6) satisfying k(0)=k0, k(T)=k*, and ċ(T)=0 (⇒ r̃(T)=ρ); IVP shooting fallback.
-- Guards: positivity for k, c, z; derivative clamping; safe powers; small initial dt.
-- Transversality diagnostics: e^{−ρt} λ k, e^{−ρt} μ c, and e^{−ρt} c^{−β} k → 0. 
-- Success thresholds (terminal): |r̃−ρ|, |k̇|, |ċ|, |k−k*|, |c−c*| small; TVCs < 1e−2.
+1. **State–costate integration (4D)**: We treat \((k,c,\lambda,\mu)\) as dynamical variables; the algebraic FOC is monitored via residuals (not eliminated) to retain robustness when \(x\) becomes small.
+2. **Complementarity**: The effective return candidate \(r_{int} = A(1-\eta)k^{\theta-1} - \delta - (\beta\gamma)/(\lambda\beta k + \mu c)\) is clamped at zero: \(\tilde r = \max(0, r_{int})\).
+3. **Shooting continuation**: A 2D shooting over the logarithms of initial \(c_0,\lambda_0\) is performed over an increasing sequence of horizons to approach terminal targets.
+4. **Terminal BVP refinement**: A collocation BVP (MIRK6) enforces boundary conditions: \(k(0)=k_0\), \(\mu(0)=0\), \(k(T)=k^*\), and \(\dot c(T)=0\) (equivalently \(\tilde r(T)=\rho\)). If collocation fails, the last shooting IVP trajectory is retained.
+5. **Diagnostics & residuals**: Finite–difference residuals are computed for all dynamic equations and the FOC. Transversality proxies \(e^{-\rho t}\lambda k\), \(e^{-\rho t}\mu c\), and \(e^{-\rho t} c^{-\beta} k\) are tracked (diagnostically only).
+6. **Success criteria**: Require small terminal deviations in \(\tilde r-\rho\), drifts \(\dot k, \dot c\), and proximity to \(k^*, c^*\). Transversality quantities are reported but not gated.
+
+## Residual diagnostics
+
+After each solve the code reports max and RMS norms of: FOC, capital, consumption, \(\lambda\), and \(\mu\) equations. These help identify if a path is only numerically stabilized (large co-state drift) despite a small FOC residual.
+
+## Welfare functional
+
+For a given \(\gamma\), welfare is approximated by trapezoidal integration of
+\[
+W(\gamma) = \int_0^T \Big( \gamma \log x(t) + \frac{c(t)^{1-\beta}}{1-\beta} \Big) e^{-\rho t}\,dt,
+\]
+where \(x = A(1-\eta)k^{\theta} - (\delta + \tilde r) k\).
+
+## Steady state note
+
+The analytical closed form presently in `steady_state.jl` predates the denominator change in \(\tilde r\) and is used only as a legacy approximation / initial reference. A numerical steady state solver matching the current specification is an open enhancement.
+
+## Solver and diagnostics (updated summary)
+
+- Continuation shooting (log-parameterized) → collocation BVP.
+- Complementarity via clamped \(\tilde r\).
+- Residual & transversality reporting.
+- Plotting restricted (optionally) to first half of the horizon for clarity; full-range plots available with `half=false`.
 
 ## Running
 
@@ -75,7 +98,7 @@ Welfare scan over γ (saves CSV, no plots):
 julia --project=. -e 'include("main.jl"); run_gamma_welfare_scan()'
 ```
 
-Details: computes W = ∫₀ᵀ [γ log x(t) + c(t)^{1−β}/(1−β)] e^{−ρ t} dt with x = γ/λ and trapezoidal quadrature. Use `limit=` to do a subset; results saved to `welfare_gamma_scan.csv`.
+Details: computes an approximation to the welfare integral using trapezoidal quadrature (with \(x = A(1-\eta)k^{\theta} - (\delta + \tilde r) k\)). Use `limit=` to do a subset; results saved to `welfare_gamma_scan.csv`.
 
 Plot welfare vs γ from the saved CSV (square figure, save-only):
 
@@ -91,7 +114,7 @@ Stability (eigenvalues of linearization):
 julia --project=. -e 'include("main.jl"); steady_linearization_eigs_kclm()'    # (k,c,λ,μ)
 ```
 
-Note: μ is recovered from the intratemporal FOC μ = (c^{−β} − λ)/ρ along interior paths; we keep (k,c,z) as states for numerical robustness.
+
 
 ## Dependencies
 

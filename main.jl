@@ -19,41 +19,110 @@ using .SteadyState
 using .ORCTSolver
 using DelimitedFiles
 using LinearAlgebra
+using Printf
+using Statistics: mean
 
 
 function run()
-    # k0 = 2.0
-    p = ModelParams(k0 = 2.0)
-    println("Parameters: ", p)
-    println("Computing steady state…")
-    ss = SteadyState.find_steady_state(p)
-    println("Steady state:")
-    println("  k*=$(ss.k), c*=$(ss.c), λ*=$(ss.λ), μ*=$(ss.μ), r̃*=$(ss.r_tilde), x*=$(ss.x), τ_k*=$(ss.tau_k)")
-
-    println("Solving BVP on [0, $(p.T)]…")
-    result = solve_orct(p)
-    println("Solver success: ", result.success)
-    title = "Optimal path (k0=$(p.k0))"
-    plot_main_solution(result, title, "solution (k0=$(p.k0)).png")
-    println("Saved plot")
-
-
-    # k0 = 4.0
-    p = ModelParams(k0 = 4.0)
-    println("Parameters: ", p)
-    println("Computing steady state…")
-    ss = SteadyState.find_steady_state(p)
-    println("Steady state:")
-    println("  k*=$(ss.k), c*=$(ss.c), λ*=$(ss.λ), μ*=$(ss.μ), r̃*=$(ss.r_tilde), x*=$(ss.x), τ_k*=$(ss.tau_k)")
-
-    println("Solving BVP on [0, $(p.T)]…")
-    result = solve_orct(p)
-    println("Solver success: ", result.success)
-    title = "Optimal path (k0=$(p.k0))"
-    plot_main_solution(result, title, "solution (k0=$(p.k0)).png")
-    println("Saved plot")
-
+    for k0 in (2.0,2.2)
+        p = ModelParams(k0 = k0)
+        println("\n=== Run with k0=$(k0) ===")
+        ss = SteadyState.find_steady_state(p)
+        println("Steady state: k*=$(ss.k), c*=$(ss.c), λ*=$(ss.λ), μ*=$(ss.μ), r̃*=$(ss.r_tilde), x*=$(ss.x)")
+        println("Solving 4D system on [0, $(p.T)]…")
+        result = solve_orct(p)
+        println("Success: ", result.success)
+        try
+            norms = ORCTSolver.check_residuals(result; p=p)
+            println("Max FOC residual = ", norms["FOC_max"], "; k_max = ", norms["k_max"])
+        catch err
+            println("Residual check failed: ", err)
+        end
+        title = "Optimal path (k0=$(p.k0))"
+    plot_main_solution(result, title, "solution (k0=$(p.k0)).png"; force=true)
+    end
 end
+
+# Diagnostic: compute residuals of core equations along a solution path
+function compute_residuals(p, sol::SolutionResult)
+    @unpack A, θ, η, ρ, β, δ, γ = p
+    k = sol.k; c = sol.c; λ = sol.λ; μ = sol.μ; t = sol.t
+    n = length(t)
+    denom = λ .* β .* k .+ μ .* c
+    denom = map(d -> (isfinite(d) && d > 1e-12) ? d : 1e-12, denom)
+    r_tilde = A .* (1 .- η) .* k .^ (θ .- 1) .- δ .- (β*γ) ./ denom
+    x = A*(1-η).*k.^θ .- (δ .+ r_tilde).*k
+    # time derivatives via finite differences (central interior, forward/backward ends)
+    function dt(v)
+        dv = similar(v)
+        dv[1] = (v[2]-v[1])/(t[2]-t[1])
+        for i in 2:n-1
+            dtm = t[i]-t[i-1]; dtp = t[i+1]-t[i]
+            dv[i] = ((v[i+1]-v[i])/dtp*dtm + (v[i]-v[i-1])/dtm*dtp)/(dtm+dtp)
+        end
+        dv[end] = (v[end]-v[end-1])/(t[end]-t[end-1])
+        dv
+    end
+    dk = dt(k); dc = dt(c); dλ = dt(λ); dμ = dt(μ)
+    foc_res = λ .+ μ .* c ./ (β .* k) .- γ ./ x
+    eq_k = dk .- (r_tilde .* k .+ A*η .* k.^θ .- c)
+    eq_c = dc .- (c ./ β) .* (r_tilde .- ρ)
+    eq_λ = dλ .- ( λ .* (ρ .- r_tilde .- A*θ*η .* k.^(θ-1)) .- (γ ./ x) .* (A*θ*(1-η) .* k.^(θ-1) .- δ .- r_tilde) )
+    eq_μ = dμ .- ( μ .* ( ρ .- (r_tilde .- ρ)./β ) .- c.^(-β) .+ λ )
+    return (; foc_res, eq_k, eq_c, eq_λ, eq_μ, r_tilde, x)
+end
+
+function summarize_residuals(label, R)
+    f = v->(@views (maximum(abs.(v)), mean(abs.(v))))
+    fkM, fkA = f(R.eq_k)
+    fcM, fcA = f(R.eq_c)
+    flM, flA = f(R.eq_λ)
+    fmM, fmA = f(R.eq_μ)
+    ffM, ffA = f(R.foc_res)
+    println("Residual summary [$label]:")
+    println(@sprintf("  FOC     max=%8.2e  mean=%8.2e", ffM, ffA))
+    println(@sprintf("  k-dot   max=%8.2e  mean=%8.2e", fkM, fkA))
+    println(@sprintf("  c-dot   max=%8.2e  mean=%8.2e", fcM, fcA))
+    println(@sprintf("  λ-dot   max=%8.2e  mean=%8.2e", flM, flA))
+    println(@sprintf("  μ-dot   max=%8.2e  mean=%8.2e", fmM, fmA))
+end
+
+# Test starting exactly at steady state
+function test_steady_state_invariance(p::ModelParams; T=50.0)
+    ss = SteadyState.find_steady_state(p)
+    # Rebuild parameter set with k0 = k* (other fields unchanged)
+    pSS = ModelParams(A=p.A, θ=p.θ, η=p.η, ρ=p.ρ, β=p.β, δ=p.δ, γ=p.γ, r=p.r, k0=ss.k, T=p.T)
+    try
+    result = solve_orct(pSS)
+        R = compute_residuals(pSS, result)
+        summarize_residuals("steady-state run", R)
+    plot_main_solution(result, "Steady state trajectory" , "solution_steady_state.png"; force=true, half=false)
+        return result
+    catch err
+        println("Solver failed from steady state: $(err)")
+        return nothing
+    end
+end
+
+# Perturb tests k0=α k*
+function test_perturbations(p::ModelParams; factors=[0.9, 1.1])
+    ss = SteadyState.find_steady_state(p)
+    for α in factors
+        println("\n--- Perturbation α=$(α) ---")
+        pα = ModelParams(A=p.A, θ=p.θ, η=p.η, ρ=p.ρ, β=p.β, δ=p.δ, γ=p.γ, r=p.r, k0=α*ss.k, T=p.T)
+        try
+            res = solve_orct(pα)
+            println("Success=$(res.success) final k=$(res.k[end])")
+            R = compute_residuals(pα, res)
+            summarize_residuals("α=$(α)", R)
+            fn = "solution_perturbation_$(replace(string(α), '.'=>'-')).png"
+            plot_main_solution(res, "Perturbation α=$(α)", fn; force=true)
+        catch err
+            println("Solver failed for perturbation α=$(α): $(err)")
+        end
+    end
+end
+
 
 # Compute welfare over a range of γ values (no plotting). Saves CSV with columns: gamma,welfare
 function run_gamma_welfare_scan(; k0::Float64=2.0,
@@ -74,7 +143,7 @@ function run_gamma_welfare_scan(; k0::Float64=2.0,
     out[1,1] = "gamma"; out[1,2] = "welfare"
 
     for (i, γ) in enumerate(gamma_values)
-        p = ModelParams(k0=k0, γ=γ)
+    p = ModelParams(k0=k0, γ=γ)
         progress && println("[$(i)/$(length(gamma_values))] γ=$(γ): solving …")
 
         welfare = NaN
@@ -85,7 +154,9 @@ function run_gamma_welfare_scan(; k0::Float64=2.0,
                 t = res.t
                 c = max.(res.c, 1e-12)
                 λ = max.(res.λ, 1e-12)
-                x = max.(γ ./ λ, 1e-12) # ensure positivity for log
+                k = max.(res.k, 1e-12)
+                r_tilde = res.r_tilde
+                x = max.(p.A*(1-p.η).*k.^p.θ - (p.δ .+ r_tilde).*k, 1e-12)
                 Uc = (c .^ (1.0 - p.β)) ./ (1.0 - p.β)
                 Vx = log.(x)
                 disc = exp.(-p.ρ .* t)
@@ -124,6 +195,11 @@ end
 # Only auto-run the demo when executing this file as a script
 if abspath(PROGRAM_FILE) == @__FILE__
     run()
+    println("\n== Steady state invariance check ==")
+    p = ModelParams()
+    test_steady_state_invariance(p)
+    println("\n== Perturbation tests (0.9, 1.1) ==")
+    test_perturbations(p)
 end
 
 

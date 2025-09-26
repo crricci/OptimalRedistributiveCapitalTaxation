@@ -15,27 +15,29 @@ using DelimitedFiles
 Create the main solution plot with vertical layout (8 plots) matching the uploaded image layout.
 Only saves to PNG, does not display. Set `force=true` to plot even if `result.success` is false.
 """
-function plot_main_solution(result, title, filename; force::Bool=false)
+function plot_main_solution(result, title, filename; force::Bool=false, half::Bool=true)
     if !result.success && !force
         println("Cannot visualize - solution failed to converge (set force=true to override)")
         return
     end
     
-    # Only plot data up to T/2 (first half of the solution)
-    T_max = maximum(result.t)
-    T_half = T_max / 2
-    half_indices = result.t .<= T_half
-    
-    t_plot = result.t[half_indices]
-    k_plot = result.k[half_indices]
-    c_plot = result.c[half_indices]
-    λ_plot = result.λ[half_indices]
-    μ_plot = result.μ[half_indices]
-    r_tilde_plot = result.r_tilde[half_indices]
-    tau_k_plot = result.tau_k[half_indices]
-    λ_transversality_plot = result.λ_transversality[half_indices]
-    μ_transversality_plot = result.μ_transversality[half_indices]
-    c_transversality_plot = result.c_transversality[half_indices]
+    # Optionally restrict to first half of time horizon
+    inds = if half
+        T_max = maximum(result.t)
+        result.t .<= T_max/2
+    else
+        trues(length(result.t))
+    end
+    t_plot = result.t[inds]
+    k_plot = result.k[inds]
+    c_plot = result.c[inds]
+    λ_plot = result.λ[inds]
+    μ_plot = result.μ[inds]
+    r_tilde_plot = result.r_tilde[inds]
+    tau_k_plot = result.tau_k[inds]
+    λ_transversality_plot = result.λ_tr[inds]
+    μ_transversality_plot = result.μ_tr[inds]
+    c_transversality_plot = result.c_tr[inds]
     
     # Create 9 subplots in vertical layout (9 rows, 1 column)
     fig, ax = PyPlot.subplots(9, 1, figsize=(12, 18))
