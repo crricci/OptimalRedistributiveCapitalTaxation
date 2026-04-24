@@ -181,3 +181,137 @@ function plot_welfare_vs_gamma(csvfile::AbstractString = "welfare_gamma_scan.csv
     println("✓ Gamma–welfare plot saved as '$(outfile)'")
     return outfile
 end
+
+"""
+    plot_gamma_vs_kstar(csvfile="gamma_kstar_scan.csv", outfile="gamma_vs_kstar.png"; title="Steady State Capital k* vs γ")
+
+Read the CSV produced by `run_gamma_kstar_scan` and plot γ on the x-axis vs k* on the y-axis.
+Saves the figure to `outfile` and does not display it.
+"""
+function plot_gamma_vs_kstar(csvfile::AbstractString = "gamma_kstar_scan.csv",
+                              outfile::AbstractString = "gamma_vs_kstar.png";
+                              title::AbstractString = "Steady State Capital k* vs γ")
+    data = readdlm(csvfile, ',')
+    nrows, ncols = size(data)
+    start_row = 1
+    if nrows >= 1 && ncols >= 2
+        # If header present, skip it
+        if !(isa(data[1,1], Number) && isa(data[1,2], Number))
+            start_row = 2
+        end
+    end
+    gammas = Float64[]
+    kstars = Float64[]
+    for i in start_row:nrows
+        gi = try
+            Float64(data[i, 1])
+        catch
+            try
+                parse(Float64, String(data[i, 1]))
+            catch
+                continue
+            end
+        end
+        ki = try
+            Float64(data[i, 2])
+        catch
+            try
+                parse(Float64, String(data[i, 2]))
+            catch
+                continue
+            end
+        end
+        if isfinite(gi) && isfinite(ki)
+            push!(gammas, gi)
+            push!(kstars, ki)
+        end
+    end
+    if length(gammas) < 2
+        println("Not enough valid data points to plot (need ≥ 2)")
+        return nothing
+    end
+    # Sort by gamma for a clean line
+    perm = sortperm(gammas)
+    g = gammas[perm]
+    k = kstars[perm]
+
+    # Square figure
+    fig, ax = PyPlot.subplots(1, 1, figsize=(8, 8))
+    fig.suptitle(title, fontsize=16, y=0.96)
+    ax.plot(g, k, "ro-", linewidth=2, markersize=4)
+    ax.set_xlabel("γ")
+    ax.set_ylabel("k*")
+    ax.grid(true)
+    PyPlot.tight_layout(rect=(0, 0, 1, 0.94))
+    PyPlot.savefig(outfile, dpi=300, bbox_inches="tight")
+    PyPlot.close(fig)
+    println("✓ Gamma vs k* plot saved as '$(outfile)'")
+    return outfile
+end
+
+"""
+    plot_gamma_vs_steadystate_welfare(csvfile="gamma_steadystate_welfare_scan.csv", outfile="gamma_vs_steadystate_welfare.png"; title="Steady State Welfare vs γ")
+
+Read the CSV produced by `run_gamma_steadystate_welfare_scan` and plot γ on the x-axis vs steady state welfare on the y-axis.
+Saves the figure to `outfile` and does not display it.
+"""
+function plot_gamma_vs_steadystate_welfare(csvfile::AbstractString = "gamma_steadystate_welfare_scan.csv",
+                                           outfile::AbstractString = "gamma_vs_steadystate_welfare.png";
+                                           title::AbstractString = "Steady State Welfare vs γ")
+    data = readdlm(csvfile, ',')
+    nrows, ncols = size(data)
+    start_row = 1
+    if nrows >= 1 && ncols >= 2
+        # If header present, skip it
+        if !(isa(data[1,1], Number) && isa(data[1,2], Number))
+            start_row = 2
+        end
+    end
+    gammas = Float64[]
+    welfares = Float64[]
+    for i in start_row:nrows
+        gi = try
+            Float64(data[i, 1])
+        catch
+            try
+                parse(Float64, String(data[i, 1]))
+            catch
+                continue
+            end
+        end
+        wi = try
+            Float64(data[i, 2])
+        catch
+            try
+                parse(Float64, String(data[i, 2]))
+            catch
+                continue
+            end
+        end
+        if isfinite(gi) && isfinite(wi)
+            push!(gammas, gi)
+            push!(welfares, wi)
+        end
+    end
+    if length(gammas) < 2
+        println("Not enough valid data points to plot (need ≥ 2)")
+        return nothing
+    end
+    # Sort by gamma for a clean line
+    perm = sortperm(gammas)
+    g = gammas[perm]
+    w = welfares[perm]
+
+    # Square figure
+    fig, ax = PyPlot.subplots(1, 1, figsize=(8, 8))
+    fig.suptitle(title, fontsize=16, y=0.96)
+    ax.plot(g, w, "go-", linewidth=2, markersize=4)
+    ax.set_xlabel("γ")
+    ax.set_ylabel("Steady State Welfare")
+    ax.grid(true)
+    PyPlot.tight_layout(rect=(0, 0, 1, 0.94))
+    PyPlot.savefig(outfile, dpi=300, bbox_inches="tight")
+    PyPlot.close(fig)
+    println("✓ Gamma vs steady state welfare plot saved as '$(outfile)'")
+    return outfile
+end

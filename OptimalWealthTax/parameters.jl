@@ -1,0 +1,18 @@
+@with_kw struct ModelParams
+    A::Float64 = 1.0
+    θ::Float64 = 0.3
+    η::Float64 = 0.6
+    β::Float64 = 0.75
+    ρ::Float64 = 0.03
+    δ::Float64 = 0.1
+    γ::Float64 = 0.5
+    n::Float64 = 1.0
+    l::Float64 = 1.0
+    k0::Float64 = 2.0
+    q0::Float64 = 1.0
+    T::Float64 = 40.0
+    N::Int = 41
+    max_iter::Int = 800
+    residual_tolerance::Float64 = 1e-7
+    min_positive::Float64 = 1e-10
+end

@@ -1,13 +1,21 @@
 # Optimal Redistributive Capital Taxation (ORCT) – Numerical tools
 
-Julia code to compute the analytical steady state, solve the dynamic ORCT system, assess stability, and run welfare scans across γ. Plots are saved (not shown on screen).
+Julia code to compute steady states, solve dynamic PMP systems, assess stability, and run welfare scans across γ. Plots are saved and not shown on screen.
 
-Contents
-- `parameters.jl` – parameter struct and defaults
-- `steady_state.jl` – (legacy) analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
-- `solver.jl` – 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
-- `visualization.jl` – save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
-- `main.jl` – runner and utilities (welfare scan, linearizations)
+## Problem split
+
+The repository now contains two isolated problem definitions.
+
+- `NoWealthTaxation.jl` – legacy model already present in the repository. This wraps the existing files `parameters.jl`, `steady_state.jl`, `solver.jl`, and `visualization.jl` under a dedicated namespace without changing the original numerical method.
+- `OptimalWealthTax.jl` – new model namespace for the 6D PMP system \((k,c,q,\Lambda_1,\Lambda_2,\Lambda_3)\). The current implementation contains a first direct-collocation solver on a trapezoidal mesh plus an analytical interior steady state implied by the Cobb-Douglas specification.
+- `main.jl` – current runner for the legacy `NoWealthTaxation` problem.
+
+## Legacy contents
+
+- `parameters.jl` – legacy parameter struct and defaults
+- `steady_state.jl` – legacy analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
+- `solver.jl` – legacy 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
+- `visualization.jl` – legacy save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
 
 ## Current dynamic system (4D with complementarity)
 
