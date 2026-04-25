@@ -1,10 +1,12 @@
+default_optimal_wealth_taxation_output_dir() = joinpath(normpath(joinpath(@__DIR__, "..")), "outputs", "optimal_wealth_taxation")
+
 function writeOptimalWealthTaxationResultCSV(result::OptimalWealthTax.CollocationResult, file_path::AbstractString)
     headers = ["t", "k", "c", "q", "Lambda1", "Lambda2", "Lambda3", "r_tilde", "x"]
     rows = ((result.t[i], result.k[i], result.c[i], result.q[i], result.Λ1[i], result.Λ2[i], result.Λ3[i], result.r_tilde[i], result.x[i]) for i in eachindex(result.t))
     return write_csv_table(file_path, headers, rows)
 end
 
-function _solveOptimalWealthTaxation(; output_dir::AbstractString = pwd(), progress::Bool = true, model_kwargs::NamedTuple = (;), solve_kwargs::NamedTuple = (;))
+function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_optimal_wealth_taxation_output_dir(), progress::Bool = true, model_kwargs::NamedTuple = (;), solve_kwargs::NamedTuple = (;))
     mkpath(output_dir)
     p = OptimalWealthTax.ModelParams(; model_kwargs...)
     result = OptimalWealthTax.solve_collocation(p; progress = progress, solve_kwargs...)

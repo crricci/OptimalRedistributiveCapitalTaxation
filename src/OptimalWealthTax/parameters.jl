@@ -11,8 +11,9 @@
     k0::Float64 = 2.0
     q0::Float64 = 1.0
     T::Float64 = 40.0
-    N::Int = 41
+    N::Int = 21
     max_iter::Int = 800
-    residual_tolerance::Float64 = 1e-7
+    residual_tolerance::Float64 = 1e-6
+    mesh_power::Float64 = 4.0
     min_positive::Float64 = 1e-10
 end

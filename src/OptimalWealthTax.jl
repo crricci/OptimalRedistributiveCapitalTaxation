@@ -1,5 +1,7 @@
 module OptimalWealthTax
 
+using BoundaryValueDiffEq
+using DifferentialEquations
 using NLsolve
 using Parameters
 
@@ -12,6 +14,7 @@ include("OptimalWealthTax/visualization.jl")
 export ModelParams
 export SteadyStateResult, find_steady_state
 export CollocationResult, solve_collocation
+export transversality_metrics
 export production_terms, foc_implied_controls, dynamics
 export plot_solution
 

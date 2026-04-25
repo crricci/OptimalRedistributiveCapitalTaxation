@@ -2,20 +2,29 @@
 
 Julia code to compute steady states, solve dynamic PMP systems, assess stability, and run welfare scans across γ. Plots are saved and not shown on screen.
 
+## Project layout
+
+- `src/` – all Julia sources.
+- `src/NoWealthTaxation/` – legacy 4D model implementation.
+- `src/OptimalWealthTax/` – new 6D PMP model implementation.
+- `outputs/` – generated CSV and PNG files. The default runners write to model-specific subfolders here.
+- `main.jl` – root entrypoint that activates the project, loads the sources from `src/`, and exposes the two public solve functions.
+- `Project.toml` and `Manifest.toml` – Julia environment definition.
+
 ## Problem split
 
 The repository now contains two isolated problem definitions.
 
-- `NoWealthTaxation.jl` – legacy model already present in the repository. This wraps the existing files `parameters.jl`, `steady_state.jl`, `solver.jl`, and `visualization.jl` under a dedicated namespace without changing the original numerical method.
-- `OptimalWealthTax.jl` – new model namespace for the 6D PMP system \((k,c,q,\Lambda_1,\Lambda_2,\Lambda_3)\). The current implementation contains a first direct-collocation solver on a trapezoidal mesh plus an analytical interior steady state implied by the Cobb-Douglas specification.
-- `main.jl` – current runner for the legacy `NoWealthTaxation` problem.
+- `src/NoWealthTaxation.jl` – legacy model namespace. It wraps the source files in `src/NoWealthTaxation/` without changing the original numerical method.
+- `src/OptimalWealthTax.jl` – new model namespace for the 6D PMP system \((k,c,q,\Lambda_1,\Lambda_2,\Lambda_3)\). The current implementation contains a direct-collocation solver on a trapezoidal mesh plus an analytical interior steady state implied by the Cobb-Douglas specification.
+- `main.jl` – root entrypoint exposing `solveNoWealthTaxation` and `solveOptimalWealthTaxation`.
 
 ## Legacy contents
 
-- `parameters.jl` – legacy parameter struct and defaults
-- `steady_state.jl` – legacy analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
-- `solver.jl` – legacy 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
-- `visualization.jl` – legacy save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
+- `src/NoWealthTaxation/parameters.jl` – legacy parameter struct and defaults
+- `src/NoWealthTaxation/steady_state.jl` – legacy analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
+- `src/NoWealthTaxation/solver.jl` – legacy 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
+- `src/NoWealthTaxation/visualization.jl` – legacy save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
 
 ## Current dynamic system (4D with complementarity)
 
@@ -81,7 +90,7 @@ where \(x = A(1-\eta)k^{\theta} - (\delta + \tilde r) k\).
 
 ## Steady state note
 
-The analytical closed form presently in `steady_state.jl` predates the denominator change in \(\tilde r\) and is used only as a legacy approximation / initial reference. A numerical steady state solver matching the current specification is an open enhancement.
+The analytical closed form presently in `src/NoWealthTaxation/steady_state.jl` predates the denominator change in \(\tilde r\) and is used only as a legacy approximation / initial reference. A numerical steady state solver matching the current specification is an open enhancement.
 
 ## Solver and diagnostics (updated summary)
 
@@ -92,13 +101,21 @@ The analytical closed form presently in `steady_state.jl` predates the denominat
 
 ## Running
 
-Plots for two initial conditions (saved only):
+Default legacy run:
 
 ```bash
 julia --project=. main.jl
 ```
 
-Output: `solution (k0=2.0).png`, `solution (k0=4.0).png`.
+Default output directory: `outputs/no_wealth_taxation/`.
+
+Run the new optimal-wealth-tax solver:
+
+```julia
+julia --project=. -e 'include("main.jl"); solveOptimalWealthTaxation()'
+```
+
+Default output directory: `outputs/optimal_wealth_taxation/`.
 
 Welfare scan over γ (saves CSV, no plots):
 
@@ -106,15 +123,15 @@ Welfare scan over γ (saves CSV, no plots):
 julia --project=. -e 'include("main.jl"); run_gamma_welfare_scan()'
 ```
 
-Details: computes an approximation to the welfare integral using trapezoidal quadrature (with \(x = A(1-\eta)k^{\theta} - (\delta + \tilde r) k\)). Use `limit=` to do a subset; results saved to `welfare_gamma_scan.csv`.
+Details: computes an approximation to the welfare integral using trapezoidal quadrature (with \(x = A(1-\eta)k^{\theta} - (\delta + \tilde r) k\)). Use `limit=` to do a subset; results are saved under `outputs/no_wealth_taxation/` unless `outfile=` is overridden.
 
 Plot welfare vs γ from the saved CSV (square figure, save-only):
 
 ```julia
-julia --project=. -e 'include("visualization.jl"); plot_welfare_vs_gamma()'
+julia --project=. -e 'include("main.jl"); NoWealthTaxation.plot_welfare_vs_gamma("outputs/no_wealth_taxation/welfare_gamma_scan.csv", "outputs/no_wealth_taxation/welfare_vs_gamma.png")'
 ```
 
-Output: `welfare_vs_gamma.png`.
+Output: `outputs/no_wealth_taxation/welfare_vs_gamma.png`.
 
 Stability (eigenvalues of linearization):
 
@@ -126,7 +143,7 @@ julia --project=. -e 'include("main.jl"); steady_linearization_eigs_kclm()'    #
 
 ## Dependencies
 
-- Julia: tested with 1.11
+- Julia: tested with 1.12
 - Packages (direct): DifferentialEquations, BoundaryValueDiffEq, NLsolve, Parameters, PyPlot
 - Standard library: DelimitedFiles, LinearAlgebra, Statistics, Pkg
 

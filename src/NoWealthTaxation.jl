@@ -1,8 +1,8 @@
 module NoWealthTaxation
 
-include("parameters.jl")
-include("solver.jl")
-include("visualization.jl")
+include("NoWealthTaxation/parameters.jl")
+include("NoWealthTaxation/solver.jl")
+include("NoWealthTaxation/visualization.jl")
 
 const SteadyState = ORCTSolver.SteadyState
 
