@@ -22,6 +22,10 @@ function solveOptimalWealthTaxation(; kwargs...)
     return _solveOptimalWealthTaxation(; kwargs...)
 end
 
+function x(; kwargs...)
+    return _solveOptimalWealthTaxation(; kwargs...)
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     solveNoWealthTaxation()
 end

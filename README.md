@@ -117,6 +117,15 @@ julia --project=. -e 'include("main.jl"); solveOptimalWealthTaxation()'
 
 Default output directory: `outputs/optimal_wealth_taxation/`.
 
+Default runner configuration for the optimal-wealth-tax problem uses a longer finite horizon and a denser mesh:
+
+- `T = 120`
+- `N = 81`
+- `max_iter = 1800`
+- terminal closure `terminal_mode = :state_steady_state`, which enforces `k(T)=k*`, `q(T)=q*`, and `c(T)=c*`
+
+The saved optimal-tax CSV now also contains the transversality diagnostics along the path (`tvc_k`, `tvc_c`, `tvc_q`), and the summary CSV records the terminal TVC values together with the terminal state and the steady-state targets.
+
 Welfare scan over γ (saves CSV, no plots):
 
 ```julia

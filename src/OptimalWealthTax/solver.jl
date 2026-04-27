@@ -13,10 +13,17 @@ struct CollocationResult
     residual_norm::Float64
 end
 
+function print_progress_result(label::AbstractString, result::CollocationResult)
+    println("OptimalWealthTax $(label): success=$(result.success) residual=$(result.residual_norm)")
+    println("  init  k=$(result.k[1]) q=$(result.q[1]) Λ2=$(result.Λ2[1])")
+    println("  final k=$(result.k[end]) c=$(result.c[end]) q=$(result.q[end]) Λ1=$(result.Λ1[end]) Λ2=$(result.Λ2[end]) Λ3=$(result.Λ3[end])")
+    return nothing
+end
+
 function transversality_metrics(result::CollocationResult, p::ModelParams)
     discount = exp.(-p.ρ .* result.t)
     k_tvc = discount .* result.Λ1 .* result.k
-    c_tvc = discount .* result.Λ2 .* result.c
+    c_tvc = discount .* max.(result.c, p.min_positive) .^ (-p.β) .* result.k
     q_tvc = discount .* result.Λ3 .* result.q
     terminal = (; k = k_tvc[end], c = c_tvc[end], q = q_tvc[end])
     return (; k = k_tvc, c = c_tvc, q = q_tvc, terminal)
@@ -37,16 +44,16 @@ function pack_solution(result::CollocationResult)
     return z
 end
 
-function with_initial_conditions(p::ModelParams, k0::Real, q0::Real)
+function with_initial_conditions(p::ModelParams, k0::Real, q0::Real; Λ20::Real = p.Λ20)
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
-        n = p.n, l = p.l, k0 = Float64(k0), q0 = Float64(q0), T = p.T, N = p.N,
+        n = p.n, l = p.l, k0 = Float64(k0), q0 = Float64(q0), Λ20 = Float64(Λ20), T = p.T, N = p.N,
     max_iter = p.max_iter, residual_tolerance = p.residual_tolerance, mesh_power = p.mesh_power,
     min_positive = p.min_positive)
 end
 
 function with_horizon(p::ModelParams, T::Real, N::Integer)
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
-        n = p.n, l = p.l, k0 = p.k0, q0 = p.q0, T = Float64(T), N = Int(N),
+        n = p.n, l = p.l, k0 = p.k0, q0 = p.q0, Λ20 = p.Λ20, T = Float64(T), N = Int(N),
         max_iter = p.max_iter, residual_tolerance = p.residual_tolerance, mesh_power = p.mesh_power,
         min_positive = p.min_positive)
 end
@@ -58,18 +65,45 @@ function node_slice(z::AbstractVector, i::Int)
     return @view z[offset + 1:offset + 6]
 end
 
+function collocation_guess_values(k::Real, q::Real, Λ2::Real, steady::SteadyStateResult, p::ModelParams)
+    k_guess = max(Float64(k), p.min_positive)
+    q_guess = Float64(q)
+    Λ2_guess = Float64(Λ2)
+    c_guess = steady.c
+    sum_guess = max(k_guess + q_guess, p.min_positive)
+    terms = production_terms(k_guess, p)
+
+    # Keep the initial guess on a feasible branch by targeting the steady-state return.
+    x_guess = terms.F - p.δ * k_guess - terms.Fn + q_guess * (terms.Fk - p.δ) - steady.r_tilde * sum_guess
+    x_guess = (!isfinite(x_guess) || x_guess <= p.min_positive) ? steady.x : x_guess
+
+    denom_target = p.γ * sum_guess / x_guess
+    Λ1_guess = (denom_target - Λ2_guess * c_guess / p.β) / sum_guess
+    Λ1_guess = isfinite(Λ1_guess) ? Λ1_guess : steady.Λ1
+
+    Λ3_guess = Λ1_guess - p.γ / x_guess
+    Λ3_guess = isfinite(Λ3_guess) ? Λ3_guess : steady.Λ3
+
+    return c_guess, Λ1_guess, Λ3_guess
+end
+
 function collocation_guess(p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector)
     N = length(tgrid)
     guess = zeros(6 * N)
     for (i, t) in enumerate(tgrid)
         w = tgrid[end] <= 0 ? 0.0 : t / tgrid[end]
         offset = node_offset(i)
-        guess[offset + 1] = (1.0 - w) * p.k0 + w * steady.k
-        guess[offset + 2] = (1.0 - w) * steady.c + w * steady.c
-        guess[offset + 3] = (1.0 - w) * p.q0 + w * steady.q
-        guess[offset + 4] = steady.Λ1
-        guess[offset + 5] = steady.Λ2
-        guess[offset + 6] = steady.Λ3
+        k_guess = (1.0 - w) * p.k0 + w * steady.k
+        q_guess = (1.0 - w) * p.q0 + w * steady.q
+        Λ2_guess = (1.0 - w) * p.Λ20 + w * steady.Λ2
+        c_guess, Λ1_guess, Λ3_guess = collocation_guess_values(k_guess, q_guess, Λ2_guess, steady, p)
+
+        guess[offset + 1] = k_guess
+        guess[offset + 2] = c_guess
+        guess[offset + 3] = q_guess
+        guess[offset + 4] = Λ1_guess
+        guess[offset + 5] = Λ2_guess
+        guess[offset + 6] = Λ3_guess
     end
     return guess
 end
@@ -119,7 +153,41 @@ function collocation_grid(p::ModelParams, N::Int)
     return collect(p.T .* (ξ .^ p.mesh_power))
 end
 
-function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector)
+function terminal_residual_values(yT::AbstractVector, p::ModelParams, steady::SteadyStateResult, scales, terminal_time::Real, terminal_mode::Symbol)
+    if terminal_mode == :steady_state || terminal_mode == :costate_steady_state
+        return [
+            (yT[2] - steady.c) / scales[2],
+            (yT[4] - steady.Λ1) / scales[4],
+            (yT[6] - steady.Λ3) / scales[6],
+        ]
+    elseif terminal_mode == :state_steady_state
+        return [
+            (yT[1] - steady.k) / scales[1],
+            (yT[3] - steady.q) / scales[3],
+            (yT[2] - steady.c) / scales[2],
+        ]
+    elseif terminal_mode == :tvc
+        discount = exp(-p.ρ * terminal_time)
+        return [
+            discount * yT[4] * yT[1],
+            discount * max(yT[2], p.min_positive)^(-p.β) * yT[1],
+            discount * yT[6] * yT[3],
+        ]
+    else
+        error("Unsupported terminal_mode=$(terminal_mode)")
+    end
+end
+
+function terminal_residuals!(residual, idx::Int, yT::AbstractVector, p::ModelParams, steady::SteadyStateResult, scales, terminal_time::Real, terminal_mode::Symbol; terminal_alpha::Float64 = 1.0)
+    values = terminal_mode == :tvc && terminal_alpha < 1.0 - 1e-12 ?
+        (1.0 - terminal_alpha) .* terminal_residual_values(yT, p, steady, scales, terminal_time, :state_steady_state) .+
+        terminal_alpha .* terminal_residual_values(yT, p, steady, scales, terminal_time, :tvc) :
+        terminal_residual_values(yT, p, steady, scales, terminal_time, terminal_mode)
+    residual[idx:idx + 2] .= values
+    return nothing
+end
+
+function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector; terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     N = length(tgrid)
     fill!(residual, 0.0)
     idx = 1
@@ -128,7 +196,7 @@ function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateR
         max(abs(steady.c), 1.0),
         max(abs(p.q0), abs(steady.q), 1.0),
         max(abs(steady.Λ1), 1.0),
-        max(abs(steady.Λ2), 1.0),
+        max(abs(p.Λ20), abs(steady.Λ2), 1.0),
         max(abs(steady.Λ3), 1.0),
     )
 
@@ -136,6 +204,8 @@ function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateR
     residual[idx] = (y0[1] - p.k0) / scales[1]
     idx += 1
     residual[idx] = (y0[3] - p.q0) / scales[3]
+    idx += 1
+    residual[idx] = (y0[5] - p.Λ20) / scales[5]
     idx += 1
     for i in 1:N-1
         yi = collect(node_slice(z, i))
@@ -155,13 +225,7 @@ function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateR
     end
 
     yT = node_slice(z, N)
-    residual[idx] = (yT[1] - steady.k) / scales[1]
-    idx += 1
-    residual[idx] = (yT[2] - steady.c) / scales[2]
-    idx += 1
-    residual[idx] = (yT[3] - steady.q) / scales[3]
-    idx += 1
-    residual[idx] = (yT[5] - steady.Λ2) / scales[5]
+    terminal_residuals!(residual, idx, yT, p, steady, scales, tgrid[end], terminal_mode; terminal_alpha = terminal_alpha)
 end
 
 function unpack_solution(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, residual_norm::Real, success::Bool)
@@ -191,6 +255,14 @@ function unpack_solution(z::AbstractVector, p::ModelParams, steady::SteadyStateR
     return CollocationResult(success, collect(tgrid), k, c, q, Λ1, Λ2, Λ3, r_tilde, x, steady, Float64(residual_norm))
 end
 
+function evaluate_candidate(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector; success::Bool = false, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
+    residual = zeros(length(z))
+    collocation_residual!(residual, z, p, steady, tgrid; terminal_mode = terminal_mode, terminal_alpha = terminal_alpha)
+    resnorm = maximum(abs.(residual))
+    actual_success = success && isfinite(resnorm) && resnorm <= p.residual_tolerance
+    return unpack_solution(z, p, steady, tgrid, resnorm, actual_success)
+end
+
 function solve_nonlinear_system(residual!, guess, p::ModelParams)
     try
         return nlsolve(residual!, guess; method = :trust_region, iterations = p.max_iter, xtol = 1e-10, ftol = 1e-10, show_trace = false)
@@ -199,7 +271,7 @@ function solve_nonlinear_system(residual!, guess, p::ModelParams)
     end
 end
 
-function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t = nothing, initial_z = nothing, use_mesh_continuation::Bool = true)
+function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t = nothing, initial_z = nothing, use_mesh_continuation::Bool = true, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     stage_sizes = use_mesh_continuation ? unique(max.(11, [cld(N, 3), cld(2 * N, 3), N])) : [N]
 
     previous_t = initial_t
@@ -209,7 +281,7 @@ function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N:
     for Ncur in stage_sizes
         tgrid = collocation_grid(p, Ncur)
         guess = previous_z === nothing ? collocation_guess(p, steady, tgrid) : interpolate_guess(previous_t, previous_z, tgrid)
-        residual!(F, z) = collocation_residual!(F, z, p, steady, tgrid)
+        residual!(F, z) = collocation_residual!(F, z, p, steady, tgrid; terminal_mode = terminal_mode, terminal_alpha = terminal_alpha)
         progress && println("OptimalWealthTax collocation stage N=$(Ncur)")
         F = zeros(length(guess))
         nls = solve_nonlinear_system(residual!, guess, p)
@@ -220,6 +292,7 @@ function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N:
         previous_t = collect(tgrid)
         previous_z = copy(z)
         final_result = unpack_solution(previous_z, p, steady, previous_t, resnorm, success)
+        progress && print_progress_result("stage N=$(Ncur)", final_result)
 
         if !success
             break
@@ -229,10 +302,10 @@ function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N:
     return final_result, previous_t, previous_z
 end
 
-function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, target_T::Real = p.T)
+function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, target_T::Real = p.T, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     base_T = ModelParams().T
     if target_T <= base_T + 1e-12
-        return solve_collocation_problem(p, steady; N = N, progress = progress, use_mesh_continuation = true)
+        return solve_collocation_problem(p, steady; N = N, progress = progress, use_mesh_continuation = true, terminal_mode = terminal_mode, terminal_alpha = terminal_alpha)
     end
 
     nstages = max(2, ceil(Int, (target_T - base_T) / base_T) + 1)
@@ -251,13 +324,92 @@ function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.
             progress = progress,
             initial_t = stage_t,
             initial_z = previous_z,
-            use_mesh_continuation = previous_z === nothing)
+            use_mesh_continuation = previous_z === nothing,
+            terminal_mode = terminal_mode,
+            terminal_alpha = terminal_alpha)
+        progress && print_progress_result("horizon T=$(round(T_stage; digits = 4))", final_result)
         if !final_result.success
             break
         end
     end
 
     return final_result, previous_t, previous_z
+end
+
+function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_stages::AbstractVector{<:Real};
+    N::Int = p.N,
+    progress::Bool = true,
+    terminal_mode::Symbol = :steady_state,
+    terminal_alpha::Float64 = 1.0)
+    isempty(T_stages) && error("T_stages must contain at least one horizon value")
+
+    previous_t = nothing
+    previous_z = nothing
+    final_result = nothing
+    target_T = Float64(last(T_stages))
+
+    for (stage_idx, T_stage_raw) in enumerate(T_stages)
+        T_stage = Float64(T_stage_raw)
+        N_stage = max(11, round(Int, 1 + (N - 1) * T_stage / target_T))
+        stage_params = with_horizon(p, T_stage, N_stage)
+        progress && println("OptimalWealthTax staged horizon continuation T=$(round(T_stage; digits = 4)) N=$(N_stage)")
+
+        if stage_idx == 1
+            final_result = solve_collocation(stage_params;
+                N = N_stage,
+                progress = progress,
+                use_continuation = true,
+                use_bvp_refinement = false,
+                use_horizon_continuation = false,
+                terminal_mode = terminal_mode,
+                use_nested_seed = false)
+            previous_t = final_result.t
+            previous_z = pack_solution(final_result)
+        else
+            stage_t = rescale_time_grid(previous_t, T_stage)
+            final_result, previous_t, previous_z = solve_collocation_problem(stage_params, steady;
+                N = N_stage,
+                progress = progress,
+                initial_t = stage_t,
+                initial_z = previous_z,
+                use_mesh_continuation = true,
+                terminal_mode = terminal_mode,
+                terminal_alpha = terminal_alpha)
+
+            if !final_result.success
+                progress && println("OptimalWealthTax staged horizon fallback solve at T=$(round(T_stage; digits = 4))")
+                final_result = solve_collocation(stage_params;
+                    N = N_stage,
+                    progress = progress,
+                    use_continuation = true,
+                    use_bvp_refinement = false,
+                    use_horizon_continuation = false,
+                    terminal_mode = terminal_mode,
+                    use_nested_seed = false)
+                previous_t = final_result.t
+                previous_z = pack_solution(final_result)
+            end
+        end
+
+        progress && print_progress_result("staged horizon T=$(round(T_stage; digits = 4))", final_result)
+        if !final_result.success
+            break
+        end
+    end
+
+    return final_result, previous_t, previous_z
+end
+
+function solve_collocation_staged_horizon(p::ModelParams, T_stages::AbstractVector{<:Real};
+    N::Int = p.N,
+    progress::Bool = true,
+    terminal_mode::Symbol = :state_steady_state)
+    steady = find_steady_state(p)
+    progress && println("OptimalWealthTax staged solve start: terminal_mode=$(terminal_mode) target T=$(p.T) stages=$(collect(Float64.(T_stages)))")
+    return continue_horizon_stages(p, steady, T_stages;
+        N = N,
+        progress = progress,
+        terminal_mode = terminal_mode)
 end
 
 function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t, initial_z, terminal_mode::Symbol = :steady_state)
@@ -278,18 +430,20 @@ function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p
         ub = u[end]
         res[1] = ua[1] - p.k0
         res[2] = ua[3] - p.q0
-        if terminal_mode == :steady_state
-            res[3] = ub[1] - steady.k
+        res[3] = ua[5] - p.Λ20
+        if terminal_mode == :steady_state || terminal_mode == :costate_steady_state
             res[4] = ub[2] - steady.c
+            res[5] = ub[4] - steady.Λ1
+            res[6] = ub[6] - steady.Λ3
+        elseif terminal_mode == :state_steady_state
+            res[4] = ub[1] - steady.k
             res[5] = ub[3] - steady.q
-            res[6] = ub[5] - steady.Λ2
+            res[6] = ub[2] - steady.c
         elseif terminal_mode == :tvc
-            controls = foc_implied_controls(ub, p)
             discount = exp(-p.ρ * p.T)
-            res[3] = discount * ub[4] * ub[1]
-            res[4] = discount * ub[5] * ub[2]
-            res[5] = discount * ub[6] * ub[3]
-            res[6] = controls === nothing ? 1e6 : controls.r_tilde - p.ρ
+            res[4] = discount * ub[4] * ub[1]
+            res[5] = discount * max(ub[2], p.min_positive)^(-p.β) * ub[1]
+            res[6] = discount * ub[6] * ub[3]
         else
             error("Unsupported terminal_mode=$(terminal_mode)")
         end
@@ -299,13 +453,17 @@ function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p
     function guess_y(t)
         if initial_t === nothing || initial_z === nothing
             w = p.T <= 0 ? 0.0 : t / p.T
+            k_guess = (1.0 - w) * p.k0 + w * steady.k
+            q_guess = (1.0 - w) * p.q0 + w * steady.q
+            Λ2_guess = (1.0 - w) * p.Λ20 + w * steady.Λ2
+            c_guess, Λ1_guess, Λ3_guess = collocation_guess_values(k_guess, q_guess, Λ2_guess, steady, p)
             return [
-                (1.0 - w) * p.k0 + w * steady.k,
-                steady.c,
-                (1.0 - w) * p.q0 + w * steady.q,
-                steady.Λ1,
-                steady.Λ2,
-                steady.Λ3,
+                k_guess,
+                c_guess,
+                q_guess,
+                Λ1_guess,
+                Λ2_guess,
+                Λ3_guess,
             ]
         end
         return interpolate_state(initial_t, initial_z, t)
@@ -328,10 +486,76 @@ function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p
     end
 
     residual = zeros(length(z))
-    collocation_residual!(residual, z, p, steady, tgrid)
+    collocation_residual!(residual, z, p, steady, tgrid; terminal_mode = terminal_mode)
     resnorm = maximum(abs.(residual))
     success = SciMLBase.successful_retcode(sol.retcode) && isfinite(resnorm) && resnorm <= p.residual_tolerance
     return unpack_solution(z, p, steady, tgrid, resnorm, success)
+end
+
+function compare_solution_paths(reference::CollocationResult, candidate::CollocationResult)
+    candidate_z = length(reference.t) == length(candidate.t) && all(reference.t .== candidate.t) ?
+        pack_solution(candidate) :
+        interpolate_guess(candidate.t, pack_solution(candidate), reference.t)
+
+    scales = (
+        max(maximum(abs.(reference.k)), maximum(abs.(candidate.k)), 1.0),
+        max(maximum(abs.(reference.c)), maximum(abs.(candidate.c)), 1.0),
+        max(maximum(abs.(reference.q)), maximum(abs.(candidate.q)), 1.0),
+        max(maximum(abs.(reference.Λ1)), maximum(abs.(candidate.Λ1)), 1.0),
+        max(maximum(abs.(reference.Λ2)), maximum(abs.(candidate.Λ2)), 1.0),
+        max(maximum(abs.(reference.Λ3)), maximum(abs.(candidate.Λ3)), 1.0),
+    )
+
+    max_change = (
+        k = maximum(abs.(reference.k .- [candidate_z[node_offset(i) + 1] for i in eachindex(reference.t)])) / scales[1],
+        c = maximum(abs.(reference.c .- [candidate_z[node_offset(i) + 2] for i in eachindex(reference.t)])) / scales[2],
+        q = maximum(abs.(reference.q .- [candidate_z[node_offset(i) + 3] for i in eachindex(reference.t)])) / scales[3],
+        Λ1 = maximum(abs.(reference.Λ1 .- [candidate_z[node_offset(i) + 4] for i in eachindex(reference.t)])) / scales[4],
+        Λ2 = maximum(abs.(reference.Λ2 .- [candidate_z[node_offset(i) + 5] for i in eachindex(reference.t)])) / scales[5],
+        Λ3 = maximum(abs.(reference.Λ3 .- [candidate_z[node_offset(i) + 6] for i in eachindex(reference.t)])) / scales[6],
+    )
+
+    return (
+        success_before = reference.success,
+        success_after = candidate.success,
+        residual_before = reference.residual_norm,
+        residual_after = candidate.residual_norm,
+        residual_ratio = candidate.residual_norm / max(reference.residual_norm, eps()),
+        max_normalized_change = max_change,
+        terminal_change = (
+            k = candidate.k[end] - reference.k[end],
+            c = candidate.c[end] - reference.c[end],
+            q = candidate.q[end] - reference.q[end],
+            Λ1 = candidate.Λ1[end] - reference.Λ1[end],
+            Λ2 = candidate.Λ2[end] - reference.Λ2[end],
+            Λ3 = candidate.Λ3[end] - reference.Λ3[end],
+        ),
+    )
+end
+
+function refine_with_bvp(reference::CollocationResult, p::ModelParams;
+    N::Int = length(reference.t),
+    progress::Bool = true,
+    terminal_mode::Symbol = :state_steady_state)
+    refined = solve_bvp_problem(p, reference.steady;
+        N = N,
+        progress = progress,
+        initial_t = reference.t,
+        initial_z = pack_solution(reference),
+        terminal_mode = terminal_mode)
+    verification = compare_solution_paths(reference, refined)
+    max_change = maximum(values(verification.max_normalized_change))
+    preserved_reference = max_change <= 1e-12
+
+    if progress
+        println("OptimalWealthTax BVP verification")
+        println("  residual before=$(verification.residual_before) after=$(verification.residual_after)")
+        println("  success  before=$(verification.success_before) after=$(verification.success_after)")
+        println("  max normalized change=$(max_change)")
+        println("  preserved reference path=$(preserved_reference)")
+    end
+
+    return (; reference, refined, verification, preserved_reference)
 end
 
 function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, previous_t, previous_z;
@@ -339,6 +563,8 @@ function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, 
     progress::Bool = true,
     base_step::Float64 = 0.025,
     min_step::Float64 = 1e-4,
+    terminal_mode::Symbol = :steady_state,
+    terminal_alpha::Float64 = 1.0,
     label::AbstractString,
     endpoint)
     current_alpha = 0.0
@@ -350,17 +576,33 @@ function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, 
 
         while step >= min_step - 1e-12
             next_alpha = min(1.0, current_alpha + step)
-            k0, q0 = endpoint(next_alpha)
-            trial_params = with_initial_conditions(p, k0, q0)
+            target = endpoint(next_alpha)
+            if length(target) == 2
+                k0, q0 = target
+                Λ20 = p.Λ20
+            elseif length(target) == 3
+                k0, q0, Λ20 = target
+            else
+                error("Continuation endpoint must return (k0, q0) or (k0, q0, Λ20)")
+            end
+            trial_params = with_initial_conditions(p, k0, q0; Λ20 = Λ20)
 
             progress && println("OptimalWealthTax $(label) continuation α=$(round(next_alpha; digits = 4))")
-            trial_result, trial_t, trial_z = solve_collocation_problem(trial_params, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z, use_mesh_continuation = false)
+            trial_result, trial_t, trial_z = solve_collocation_problem(trial_params, steady;
+                N = N,
+                progress = progress,
+                initial_t = previous_t,
+                initial_z = previous_z,
+                use_mesh_continuation = false,
+                terminal_mode = terminal_mode,
+                terminal_alpha = terminal_alpha)
 
             if trial_result.success
                 current_alpha = next_alpha
                 previous_t = trial_t
                 previous_z = trial_z
                 final_result = trial_result
+                progress && print_progress_result("$(label) continuation accepted α=$(round(current_alpha; digits = 4))", final_result)
                 step_success = true
                 break
             end
@@ -368,6 +610,55 @@ function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, 
             step *= 0.5
             if step >= min_step - 1e-12
                 progress && println("  reducing continuation step to $(round(step; digits = 4))")
+            end
+        end
+
+        if !step_success
+            return current_alpha, final_result, previous_t, previous_z
+        end
+    end
+
+    return current_alpha, final_result, previous_t, previous_z
+end
+
+function continue_terminal_conditions(p::ModelParams, steady::SteadyStateResult, previous_t, previous_z;
+    N::Int = p.N,
+    progress::Bool = true,
+    base_step::Float64 = 0.1,
+    min_step::Float64 = 1e-5,
+    acceptance_tolerance::Float64 = max(1e-4, 10.0 * p.residual_tolerance))
+    current_alpha = 0.0
+    final_result = evaluate_candidate(previous_z, p, steady, previous_t; success = false, terminal_mode = :tvc, terminal_alpha = current_alpha)
+
+    while current_alpha < 1.0 - 1e-12
+        step = min(base_step, 1.0 - current_alpha)
+        step_success = false
+
+        while step >= min_step - 1e-12
+            next_alpha = min(1.0, current_alpha + step)
+            progress && println("OptimalWealthTax terminal continuation α=$(round(next_alpha; digits = 4))")
+            trial_result, trial_t, trial_z = solve_collocation_problem(p, steady;
+                N = N,
+                progress = progress,
+                initial_t = previous_t,
+                initial_z = previous_z,
+                use_mesh_continuation = false,
+                terminal_mode = :tvc,
+                terminal_alpha = next_alpha)
+
+            if isfinite(trial_result.residual_norm) && trial_result.residual_norm <= acceptance_tolerance
+                current_alpha = next_alpha
+                previous_t = trial_t
+                previous_z = trial_z
+                final_result = trial_result
+                progress && print_progress_result("terminal continuation accepted α=$(round(current_alpha; digits = 4))", final_result)
+                step_success = true
+                break
+            end
+
+            step *= 0.5
+            if step >= min_step - 1e-12
+                progress && println("  reducing terminal continuation step to $(round(step; digits = 5))")
             end
         end
 
@@ -389,33 +680,165 @@ function better_target_result(lhs::CollocationResult, rhs::CollocationResult)
     return lhs.residual_norm <= rhs.residual_norm ? lhs : rhs
 end
 
-function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progress::Bool = true, use_continuation::Bool = false, use_bvp_refinement::Bool = false, use_horizon_continuation::Bool = false)
+function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progress::Bool = true, use_continuation::Bool = true, use_bvp_refinement::Bool = false, use_horizon_continuation::Bool = false, terminal_mode::Symbol = :state_steady_state, use_nested_seed::Bool = true)
     steady = find_steady_state(p)
+    progress && println("OptimalWealthTax solve start: terminal_mode=$(terminal_mode) T=$(p.T) N=$(N) k0=$(p.k0) q0=$(p.q0) Λ20=$(p.Λ20)")
+    progress && println("OptimalWealthTax steady state: k*=$(steady.k) c*=$(steady.c) q*=$(steady.q) Λ1*=$(steady.Λ1) Λ2*=$(steady.Λ2) Λ3*=$(steady.Λ3)")
 
-    steady_params = with_initial_conditions(p, steady.k, steady.q)
-    steady_result, previous_t, previous_z = solve_collocation_problem(steady_params, steady; N = N, progress = progress, use_mesh_continuation = true)
+    if terminal_mode == :tvc
+        seed_t = nothing
+        seed_z = nothing
+        if use_nested_seed
+            progress && println("OptimalWealthTax building seed from state_steady_state closure for TVC solve")
+            seed_result = solve_collocation(p;
+                N = N,
+                progress = progress,
+                use_continuation = use_continuation,
+                use_bvp_refinement = false,
+                use_horizon_continuation = use_horizon_continuation,
+                terminal_mode = :state_steady_state,
+                use_nested_seed = true)
+            seed_t = seed_result.t
+            seed_z = pack_solution(seed_result)
+        end
+        failed_target_attempts = CollocationResult[]
+
+        progress && println(seed_z === nothing ?
+            "OptimalWealthTax attempting direct TVC solve from collocation guess" :
+            "OptimalWealthTax attempting direct TVC solve from state-based seed")
+        direct_result, direct_t, direct_z = solve_collocation_problem(p, steady;
+            N = N,
+            progress = progress,
+            initial_t = seed_t,
+            initial_z = seed_z,
+            use_mesh_continuation = true,
+            terminal_mode = :tvc)
+        if direct_result.success
+            progress && print_progress_result("direct TVC solve", direct_result)
+            return direct_result
+        end
+        progress && print_progress_result("direct TVC solve failed", direct_result)
+        push!(failed_target_attempts, direct_result)
+
+        terminal_t = direct_t
+        terminal_z = direct_z
+        if seed_z !== nothing
+            progress && println("OptimalWealthTax attempting terminal homotopy from state closure to TVC")
+            terminal_alpha, terminal_result, terminal_t, terminal_z = continue_terminal_conditions(p, steady, seed_t, seed_z;
+                N = N,
+                progress = progress)
+            push!(failed_target_attempts, evaluate_candidate(terminal_z, p, steady, terminal_t; success = false, terminal_mode = :tvc, terminal_alpha = terminal_alpha))
+
+            if terminal_alpha >= 1.0 - 1e-12
+                progress && println("OptimalWealthTax refining full TVC solve from homotopy seed")
+                refined_result, refined_t, refined_z = solve_collocation_problem(p, steady;
+                    N = N,
+                    progress = progress,
+                    initial_t = terminal_t,
+                    initial_z = terminal_z,
+                    use_mesh_continuation = false,
+                    terminal_mode = :tvc)
+                push!(failed_target_attempts, refined_result)
+                if refined_result.success
+                    progress && print_progress_result("refined TVC solve", refined_result)
+                    return refined_result
+                end
+                terminal_t, terminal_z = refined_t, refined_z
+            end
+        end
+
+        if use_bvp_refinement
+            push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = terminal_t, initial_z = terminal_z, terminal_mode = :tvc))
+        end
+
+        best_result = reduce(better_target_result, failed_target_attempts)
+        progress && print_progress_result("best TVC result after homotopy", best_result)
+        return best_result
+    end
+
+    seed_t = nothing
+    seed_z = nothing
+    if terminal_mode == :state_steady_state && use_nested_seed
+        progress && println("OptimalWealthTax building seed from costate_steady_state closure")
+        seed_result = solve_collocation(p;
+            N = N,
+            progress = progress,
+            use_continuation = use_continuation,
+            use_bvp_refinement = false,
+            use_horizon_continuation = use_horizon_continuation,
+            terminal_mode = :costate_steady_state,
+            use_nested_seed = true)
+        if isfinite(seed_result.residual_norm)
+            seed_t = seed_result.t
+            seed_z = pack_solution(seed_result)
+            progress && print_progress_result("seed result", seed_result)
+        end
+    end
+
+    steady_params = with_initial_conditions(p, steady.k, steady.q; Λ20 = steady.Λ2)
+    progress && println("OptimalWealthTax solving steady-state anchor problem")
+    steady_result, previous_t, previous_z = solve_collocation_problem(steady_params, steady; N = N, progress = progress, use_mesh_continuation = true, terminal_mode = terminal_mode)
     if !steady_result.success
+        progress && print_progress_result("steady-state anchor failed", steady_result)
         return steady_result
     end
 
-    target_gap = max(abs(p.k0 - steady.k) / max(abs(steady.k), 1.0), abs(p.q0 - steady.q) / max(abs(steady.q), 1.0))
+    target_gap = max(
+        abs(p.k0 - steady.k) / max(abs(steady.k), 1.0),
+        abs(p.q0 - steady.q) / max(abs(steady.q), 1.0),
+        abs(p.Λ20 - steady.Λ2) / max(abs(steady.Λ2), 1.0),
+    )
     if target_gap <= 1e-12
         return steady_result
     end
 
     failed_target_attempts = CollocationResult[]
 
-    direct_result, direct_t, direct_z = solve_collocation_problem(p, steady; N = N, progress = progress, use_mesh_continuation = true)
+    progress && println("OptimalWealthTax attempting direct target solve")
+    direct_result, direct_t, direct_z = solve_collocation_problem(p, steady;
+        N = N,
+        progress = progress,
+        initial_t = seed_t,
+        initial_z = seed_z,
+        use_mesh_continuation = true,
+        terminal_mode = terminal_mode)
     if direct_result.success
+        progress && print_progress_result("direct target solve", direct_result)
         return direct_result
     end
+    progress && print_progress_result("direct target solve failed", direct_result)
     push!(failed_target_attempts, direct_result)
 
+    progress && println("OptimalWealthTax attempting diagonal initial-condition continuation")
+    initial_alpha, initial_result, initial_t, initial_z = continue_initial_conditions(p, steady, previous_t, previous_z;
+        N = N,
+        progress = progress,
+        terminal_mode = terminal_mode,
+        label = "initial",
+        endpoint = α -> (
+            steady.k + α * (p.k0 - steady.k),
+            steady.q + α * (p.q0 - steady.q),
+            steady.Λ2 + α * (p.Λ20 - steady.Λ2),
+        ))
+    if initial_alpha >= 1.0 - 1e-12
+        progress && print_progress_result("initial continuation reached target", initial_result)
+        return better_target_result(direct_result, initial_result)
+    end
+    initial_result = evaluate_candidate(initial_z, p, steady, initial_t; success = false, terminal_mode = terminal_mode)
+    progress && print_progress_result("initial continuation partial candidate", initial_result)
+    push!(failed_target_attempts, initial_result)
+    if better_target_result(initial_result, direct_result) === initial_result
+        direct_t, direct_z = initial_t, initial_z
+    end
+
     if use_horizon_continuation
-        horizon_result, horizon_t, horizon_z = continue_horizon(p, steady; N = N, progress = progress, target_T = p.T)
+        progress && println("OptimalWealthTax attempting horizon continuation")
+        horizon_result, horizon_t, horizon_z = continue_horizon(p, steady; N = N, progress = progress, target_T = p.T, terminal_mode = terminal_mode)
         if horizon_result.success
+            progress && print_progress_result("horizon continuation", horizon_result)
             return horizon_result
         end
+        progress && print_progress_result("horizon continuation failed", horizon_result)
         push!(failed_target_attempts, horizon_result)
         if better_target_result(horizon_result, direct_result) === horizon_result
             direct_t, direct_z = horizon_t, horizon_z
@@ -423,61 +846,110 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
     end
 
     if use_bvp_refinement
-        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = direct_t, initial_z = direct_z))
+        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = direct_t, initial_z = direct_z, terminal_mode = terminal_mode))
     end
 
     if !use_continuation
-        return reduce(better_target_result, failed_target_attempts)
+        best_result = reduce(better_target_result, failed_target_attempts)
+        progress && print_progress_result("best result without continuation", best_result)
+        return best_result
     end
 
+    progress && println("OptimalWealthTax attempting diag continuation")
     diag_alpha, diag_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
         N = N,
         progress = progress,
+        terminal_mode = terminal_mode,
         label = "diag",
-        endpoint = α -> (steady.k + α * (p.k0 - steady.k), steady.q + α * (p.q0 - steady.q)))
+        endpoint = α -> (
+            steady.k + α * (p.k0 - steady.k),
+            steady.q + α * (p.q0 - steady.q),
+            steady.Λ2 + α * (p.Λ20 - steady.Λ2),
+        ))
     if diag_alpha >= 1.0 - 1e-12
+        progress && print_progress_result("diag continuation reached target", diag_result)
         return diag_result
     end
 
     if use_bvp_refinement
-        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z))
+        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z, terminal_mode = terminal_mode))
     end
 
-    steady_result, previous_t, previous_z = solve_collocation_problem(steady_params, steady; N = N, progress = progress, use_mesh_continuation = true)
+    progress && println("OptimalWealthTax restarting from steady-state anchor for ordered continuation")
+    steady_result, previous_t, previous_z = solve_collocation_problem(steady_params, steady; N = N, progress = progress, use_mesh_continuation = true, terminal_mode = terminal_mode)
     if !steady_result.success
+        progress && print_progress_result("steady-state anchor restart failed", steady_result)
         return steady_result
     end
 
-    q_alpha, q_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
+    progress && println("OptimalWealthTax ordered continuation on Λ20")
+    Λ2_alpha, Λ2_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
         N = N,
         progress = progress,
-        label = "q0",
-        endpoint = α -> (steady.k, steady.q + α * (p.q0 - steady.q)))
-    if q_alpha < 1.0 - 1e-12
+        terminal_mode = terminal_mode,
+        label = "Λ20",
+        endpoint = α -> (steady.k, steady.q, steady.Λ2 + α * (p.Λ20 - steady.Λ2)))
+    if Λ2_alpha < 1.0 - 1e-12
+        push!(failed_target_attempts, evaluate_candidate(previous_z, p, steady, previous_t; success = false, terminal_mode = terminal_mode))
         if use_bvp_refinement
-            push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z))
+            push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z, terminal_mode = terminal_mode))
         end
-        return reduce(better_target_result, failed_target_attempts)
+        best_result = reduce(better_target_result, failed_target_attempts)
+        progress && print_progress_result("ordered continuation stopped on Λ20", best_result)
+        return best_result
     end
 
+    progress && println("OptimalWealthTax ordered continuation on k0")
     k_alpha, k_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
         N = N,
         progress = progress,
+        terminal_mode = terminal_mode,
         label = "k0",
-        endpoint = α -> (steady.k + α * (p.k0 - steady.k), p.q0))
+        endpoint = α -> (steady.k + α * (p.k0 - steady.k), steady.q, p.Λ20))
     if k_alpha < 1.0 - 1e-12
+        push!(failed_target_attempts, evaluate_candidate(previous_z, p, steady, previous_t; success = false, terminal_mode = terminal_mode))
         if use_bvp_refinement
-            push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z))
+            push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z, terminal_mode = terminal_mode))
         end
-        return reduce(better_target_result, failed_target_attempts)
+        best_result = reduce(better_target_result, failed_target_attempts)
+        progress && print_progress_result("ordered continuation stopped on k0", best_result)
+        return best_result
     end
 
-    if k_result.success
-        return k_result
+    progress && println("OptimalWealthTax ordered continuation on q0")
+    q_alpha, q_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
+        N = N,
+        progress = progress,
+        terminal_mode = terminal_mode,
+        label = "q0",
+        endpoint = α -> (p.k0, steady.q + α * (p.q0 - steady.q), p.Λ20))
+    if q_alpha >= 1.0 - 1e-12 && q_result.success
+        progress && print_progress_result("ordered continuation reached target", q_result)
+        return q_result
     end
+
+    push!(failed_target_attempts, evaluate_candidate(previous_z, p, steady, previous_t; success = false, terminal_mode = terminal_mode))
+
+    progress && println("OptimalWealthTax retrying full target from ordered-continuation branch")
+    target_from_branch, branch_t, branch_z = solve_collocation_problem(p, steady;
+        N = N,
+        progress = progress,
+        initial_t = previous_t,
+        initial_z = previous_z,
+        use_mesh_continuation = true,
+        terminal_mode = terminal_mode)
+    if target_from_branch.success
+        progress && print_progress_result("branch-seeded target solve", target_from_branch)
+        return target_from_branch
+    end
+    progress && print_progress_result("branch-seeded target solve failed", target_from_branch)
+    push!(failed_target_attempts, target_from_branch)
+    direct_t, direct_z = branch_t, branch_z
 
     if use_bvp_refinement
-        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z))
+        push!(failed_target_attempts, solve_bvp_problem(p, steady; N = N, progress = progress, initial_t = previous_t, initial_z = previous_z, terminal_mode = terminal_mode))
     end
-    return reduce(better_target_result, failed_target_attempts)
+    best_result = reduce(better_target_result, failed_target_attempts)
+    progress && print_progress_result("best result after all attempts", best_result)
+    return best_result
 end

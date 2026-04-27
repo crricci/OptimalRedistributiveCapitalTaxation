@@ -10,6 +10,7 @@
     l::Float64 = 1.0
     k0::Float64 = 2.0
     q0::Float64 = 1.0
+    Λ20::Float64 = 0.0
     T::Float64 = 40.0
     N::Int = 21
     max_iter::Int = 800

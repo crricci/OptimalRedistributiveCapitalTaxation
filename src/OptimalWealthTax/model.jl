@@ -13,6 +13,8 @@ function production_terms(k::Real, p::ModelParams)
     return (; F, Fk, Fn, Fkk, Fnk)
 end
 
+smooth_positive_part(z::Real, ε::Real) = 0.5 * (z + sqrt(z * z + ε * ε))
+
 function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
     k, c, q, Λ1, Λ2 = y[1], y[2], y[3], y[4], y[5]
     if !(isfinite(k) && isfinite(c) && isfinite(q) && isfinite(Λ1) && isfinite(Λ2))
@@ -22,19 +24,30 @@ function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
     k_eff = max(k, p.min_positive)
     c_eff = max(c, p.min_positive)
     sum_eff = max(k + q, p.min_positive)
+    terms = production_terms(k_eff, p)
+    resource_term = terms.F - p.δ * k_eff - terms.Fn + q * (terms.Fk - p.δ)
 
     denom = Λ1 * sum_eff + Λ2 * c_eff / p.β
     if !isfinite(denom)
         return nothing
     end
-    denom = abs(denom) <= p.min_positive ? sign(denom + eps()) * p.min_positive : denom
 
-    x = p.γ * sum_eff / denom
-    x = (!isfinite(x) || x <= p.min_positive) ? p.min_positive : x
+    # KKT-implied effective return: take the interior maximizer when feasible,
+    # then enforce the admissible set r_tilde >= 0.
+    r_unconstrained = if denom > p.min_positive
+        resource_term / sum_eff - p.γ / denom
+    else
+        -Inf
+    end
+    r_tilde = smooth_positive_part(r_unconstrained, p.min_positive)
 
-    terms = production_terms(k_eff, p)
-    r_tilde = (terms.F - p.δ * k_eff - terms.Fn + q * (terms.Fk - p.δ) - x) / sum_eff
     if !isfinite(r_tilde)
+        return nothing
+    end
+
+    x = resource_term - sum_eff * r_tilde
+    x = (!isfinite(x) || x <= p.min_positive) ? p.min_positive : x
+    if !isfinite(x)
         return nothing
     end
 
