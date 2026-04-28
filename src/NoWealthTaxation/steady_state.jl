@@ -15,6 +15,21 @@ module SteadyState
 """
     analytic_steady_state(p)
 
+Computes the analytical steady state of the `NoWealthTaxation` model.
+
+Input arguments:
+- `p`: parameter object, typically `ModelParams`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `SteadyStateResult`.
+- All returned fields are scalars with size `1 x 1`.
+"""
+"""
+    analytic_steady_state(p)
+
 Return analytic steady state using provided formula:
   k* = (( (ρ+δ)(θ+γ) + γ ρ θ ) / ( θ A (1+γ)(1-η) ))^{1/(θ-1)}
 Then derive:
@@ -62,6 +77,17 @@ end
 export find_steady_state, SteadyStateResult
 
 
+"""
+    SteadyStateResult
+
+Struct storing the steady state of the `NoWealthTaxation` model.
+
+Fields:
+- `k`, `c`, `λ`, `μ`, `r_tilde`, `x`, `tau_k`: all are scalar `Float64` values.
+
+Dimensions:
+- Each field has size `1 x 1`; no time trajectories are stored here.
+"""
 struct SteadyStateResult
     k::Float64
     c::Float64

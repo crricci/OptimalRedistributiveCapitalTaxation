@@ -1,7 +1,38 @@
+"""
+    production_scale(p)
+
+Computes the scale factor of the Cobb-Douglas production function after labor and population are fixed.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a scalar `Float64`.
+- The returned quantity has size `1 x 1` and is reused in all production derivatives.
+"""
 function production_scale(p::ModelParams)
     return p.A * p.n^p.η * p.l^(1.0 - p.θ - p.η)
 end
 
+"""
+    production_terms(k, p)
+
+Evaluates production and its derivatives with respect to capital and effective labor at the point `k`.
+
+Input arguments:
+- `k::Real`: current capital, scalar.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a named tuple with scalar fields `F`, `Fk`, `Fn`, `Fkk`, and `Fnk`.
+- Each field has size `1 x 1`.
+"""
 function production_terms(k::Real, p::ModelParams)
     scale = production_scale(p)
     labor_scale = p.A * p.l^(1.0 - p.θ - p.η)
@@ -13,8 +44,23 @@ function production_terms(k::Real, p::ModelParams)
     return (; F, Fk, Fn, Fkk, Fnk)
 end
 
-smooth_positive_part(z::Real, ε::Real) = 0.5 * (z + sqrt(z * z + ε * ε))
+"""
+    foc_implied_controls(y, p)
 
+Reconstructs the implied controls `r_tilde` and `x` from the current state-costate vector and the first-order conditions.
+
+Input arguments:
+- `y::AbstractVector{<:Real}`: state-costate vector. The first five entries must be `(k, c, q, Λ1, Λ2)`; if the vector has length 6 the sixth entry is ignored.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns `nothing` when the inputs are numerically invalid.
+- Otherwise returns a named tuple with scalar fields `r_tilde`, `x`, `F`, `Fk`, `Fn`, `Fkk`, and `Fnk`.
+- All returned components have size `1 x 1`.
+"""
 function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
     k, c, q, Λ1, Λ2 = y[1], y[2], y[3], y[4], y[5]
     if !(isfinite(k) && isfinite(c) && isfinite(q) && isfinite(Λ1) && isfinite(Λ2))
@@ -39,7 +85,7 @@ function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
     else
         -Inf
     end
-    r_tilde = smooth_positive_part(r_unconstrained, p.min_positive)
+    r_tilde = max(0.0, r_unconstrained)
 
     if !isfinite(r_tilde)
         return nothing
@@ -54,6 +100,22 @@ function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
     return (; r_tilde, x, terms...)
 end
 
+"""
+    dynamics(y, p)
+
+Evaluates the dynamic system of the optimal-control problem for `(k, c, q, Λ1, Λ2, Λ3)`.
+
+Input arguments:
+- `y::AbstractVector{<:Real}`: vector of length 6 ordered as `(k, c, q, Λ1, Λ2, Λ3)`.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length 6 containing `(dk, dc, dq, dΛ1, dΛ2, dΛ3)`.
+- If the controls are not numerically defined, it returns a vector of six `NaN` values.
+"""
 function dynamics(y::AbstractVector{<:Real}, p::ModelParams)
     controls = foc_implied_controls(y, p)
     if controls === nothing

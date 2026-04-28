@@ -5,6 +5,24 @@ end
 using PyPlot
 PyPlot.ioff()
 
+"""
+    plot_solution(result, title, filename; force=false, half=false)
+
+Plots and saves the `OptimalWealthTax` trajectory using nine stacked panels.
+
+Input arguments:
+- `result::CollocationResult`: solution to visualize; every trajectory stored inside has length `N = length(result.t)`.
+- `title::AbstractString`: overall figure title.
+- `filename::AbstractString`: path of the PNG file to write.
+
+Optional parameters:
+- `force::Bool=false`: save the plot even if `result.success == false`.
+- `half::Bool=false`: if true, only use the first half of the horizon.
+
+Output:
+- Returns `filename` when the plot is saved.
+- Returns `nothing` if the solution failed and `force == false`.
+"""
 function plot_solution(result::CollocationResult, title::AbstractString, filename::AbstractString; force::Bool = false, half::Bool = false)
     if !result.success && !force
         println("Cannot visualize - solution failed to converge (set force=true to override)")

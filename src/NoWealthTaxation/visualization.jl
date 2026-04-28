@@ -14,6 +14,19 @@ using DelimitedFiles
 
 Create the main solution plot with vertical layout (8 plots) matching the uploaded image layout.
 Only saves to PNG, does not display. Set `force=true` to plot even if `result.success` is false.
+
+Input arguments:
+- `result`: solution object whose trajectory fields all have length `N = length(result.t)`.
+- `title`: figure title.
+- `filename`: PNG path to write.
+
+Optional parameters:
+- `force::Bool = false`: save the figure even if the solution failed.
+- `half::Bool = true`: restrict plotting to the first half of the time horizon.
+
+Output:
+- Returns `nothing`.
+- Writes one PNG file with nine stacked panels.
 """
 function plot_main_solution(result, title, filename; force::Bool=false, half::Bool=true)
     if !result.success && !force
@@ -120,6 +133,17 @@ end
 
 Read the CSV produced by `run_gamma_welfare_scan` and plot γ on the x-axis vs welfare on the y-axis.
 Saves the figure to `outfile` and does not display it.
+
+Input arguments:
+- `csvfile::AbstractString`: CSV path containing two columns `(gamma, welfare)` and `M` data rows.
+- `outfile::AbstractString`: PNG path to write.
+
+Optional parameters:
+- `title::AbstractString = "Welfare vs γ"`: figure title.
+
+Output:
+- Returns `outfile` if at least two valid data rows are found.
+- Returns `nothing` otherwise.
 """
 function plot_welfare_vs_gamma(csvfile::AbstractString = "welfare_gamma_scan.csv",
                                outfile::AbstractString = "welfare_vs_gamma.png";
@@ -187,6 +211,17 @@ end
 
 Read the CSV produced by `run_gamma_kstar_scan` and plot γ on the x-axis vs k* on the y-axis.
 Saves the figure to `outfile` and does not display it.
+
+Input arguments:
+- `csvfile::AbstractString`: CSV path containing two columns `(gamma, k_star)` and `M` data rows.
+- `outfile::AbstractString`: PNG path to write.
+
+Optional parameters:
+- `title::AbstractString = "Steady State Capital k* vs γ"`: figure title.
+
+Output:
+- Returns `outfile` if at least two valid data rows are found.
+- Returns `nothing` otherwise.
 """
 function plot_gamma_vs_kstar(csvfile::AbstractString = "gamma_kstar_scan.csv",
                               outfile::AbstractString = "gamma_vs_kstar.png";
@@ -254,6 +289,17 @@ end
 
 Read the CSV produced by `run_gamma_steadystate_welfare_scan` and plot γ on the x-axis vs steady state welfare on the y-axis.
 Saves the figure to `outfile` and does not display it.
+
+Input arguments:
+- `csvfile::AbstractString`: CSV path containing two columns `(gamma, steady_state_welfare)` and `M` data rows.
+- `outfile::AbstractString`: PNG path to write.
+
+Optional parameters:
+- `title::AbstractString = "Steady State Welfare vs γ"`: figure title.
+
+Output:
+- Returns `outfile` if at least two valid data rows are found.
+- Returns `nothing` otherwise.
 """
 function plot_gamma_vs_steadystate_welfare(csvfile::AbstractString = "gamma_steadystate_welfare_scan.csv",
                                            outfile::AbstractString = "gamma_vs_steadystate_welfare.png";

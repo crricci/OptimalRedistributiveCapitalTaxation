@@ -12,6 +12,16 @@ using Parameters
 include("steady_state.jl")
 using .SteadyState
 
+"""
+    SolutionResult
+
+Struct storing the output of a `NoWealthTaxation` solve.
+
+Fields:
+- `success::Bool`: solver success flag.
+- `t`, `k`, `c`, `λ`, `μ`, `r_tilde`, `tau_k`, `λ_tr`, `μ_tr`, `c_tr`: vectors of common length `N = length(t)`.
+- `steady::SteadyStateResult`: scalar steady-state reference.
+"""
 struct SolutionResult
     success::Bool
     t::Vector{Float64}
@@ -28,7 +38,7 @@ struct SolutionResult
 end
 
 """
-    check_residuals(result; p=ModelParams())
+        check_residuals(result; p=ModelParams())
 
 Compute residuals for the model equations on the discrete solution path:
   (1) FOC: λ + μ c/(β k) - γ/x = 0
@@ -36,7 +46,15 @@ Compute residuals for the model equations on the discrete solution path:
   (3) ċ - [ (c/β)(r̃ - ρ) ] = 0
   (4) λ̇ - RHS_λ = 0
   (5) μ̇ - RHS_μ = 0
-Return a dictionary with max and RMS norms. Uses central differences for interior points.
+Input arguments:
+- `res::SolutionResult`: solution with trajectory length `N = length(res.t)`.
+
+Optional parameters:
+- `p = ModelParams()`: parameter object used to evaluate residuals.
+
+Output:
+- Returns a `Dict{String, Any}` of scalar max and RMS norms.
+- All residual arrays used internally have length `N`.
 """
 function check_residuals(res::SolutionResult; p=ModelParams())
     @unpack A, θ, η, ρ, β, δ, γ = p
@@ -84,11 +102,22 @@ function check_residuals(res::SolutionResult; p=ModelParams())
 end
 
 """
-    solve_orct(p; T=p.T, N::Int=2001, α::Float64=0.95, debug::Bool=false, progress::Bool=true)
+    solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=true)
 
-2D shooting on (c(0), z(0)) where z ≡ 1/(λ k). Smooth interior ODE in (k,c,z). Targets: k(T)=k*, r̃(T)=ρ.
+High-level solver for the `NoWealthTaxation` system, combining shooting continuation and a BVP attempt.
 
-If `debug=true`, prints the initial conditions and initial derivatives tested for both IVP and BVP guesses and flags any NaN/Inf.
+Input arguments:
+- `p`: parameter object, typically `ModelParams`.
+
+Optional parameters:
+- `T = p.T`: scalar solution horizon.
+- `N::Int = 2001`: number of saved time points when the IVP path is stored.
+- `debug::Bool = false`: print additional diagnostics for initial guesses and derivatives.
+- `progress::Bool = true`: print solver progress.
+
+Output:
+- Returns a `SolutionResult`.
+- All vector-valued fields in the result have common length `N_path`, equal either to the BVP grid length returned by the solver or to the saved IVP path length.
 """
 function solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=true)
     steady = SteadyState.find_steady_state(p)

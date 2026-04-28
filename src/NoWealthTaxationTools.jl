@@ -4,6 +4,22 @@ using Printf
 using Statistics: mean
 using Parameters
 
+"""
+    compute_residuals(p, sol)
+
+Computes equation-by-equation residual series for a `NoWealthTaxation` solution.
+
+Input arguments:
+- `p::NoWealthTaxation.ModelParams`: model parameters.
+- `sol::NoWealthTaxation.SolutionResult`: solution whose trajectory fields have common length `N = length(sol.t)`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a named tuple with vector fields `foc_res`, `eq_k`, `eq_c`, `eq_λ`, `eq_μ`, `r_tilde`, and `x`.
+- Every returned vector has length `N`.
+"""
 function compute_residuals(p::NoWealthTaxation.ModelParams, sol::NoWealthTaxation.SolutionResult)
     @unpack A, θ, η, ρ, β, δ, γ = p
     k = sol.k
@@ -41,6 +57,22 @@ function compute_residuals(p::NoWealthTaxation.ModelParams, sol::NoWealthTaxatio
     return (; foc_res, eq_k, eq_c, eq_λ, eq_μ, r_tilde, x)
 end
 
+"""
+    summarize_residuals(label, R)
+
+Prints max and mean absolute residual summaries for a residual bundle returned by `compute_residuals`.
+
+Input arguments:
+- `label`: label printed in the summary header.
+- `R`: named tuple containing residual vectors of common length `N`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns `nothing`.
+- Consumes the full residual vectors and prints scalar summaries.
+"""
 function summarize_residuals(label, R)
     f = v -> (@views (maximum(abs.(v)), mean(abs.(v))))
     fkM, fkA = f(R.eq_k)
@@ -56,6 +88,21 @@ function summarize_residuals(label, R)
     println(@sprintf("  μ-dot   max=%8.2e  mean=%8.2e", fmM, fmA))
 end
 
+"""
+    test_steady_state_invariance(p; T=50.0)
+
+Runs the legacy solver starting from the analytical steady state to test invariance numerically.
+
+Input arguments:
+- `p::NoWealthTaxation.ModelParams`: baseline model parameters.
+
+Optional parameters:
+- `T = 50.0`: requested test horizon. This function currently rebuilds parameters using `p.T` in the internal test problem.
+
+Output:
+- Returns a `NoWealthTaxation.SolutionResult` on success.
+- Returns `nothing` if the solve fails.
+"""
 function test_steady_state_invariance(p::NoWealthTaxation.ModelParams; T = 50.0)
     ss = NoWealthTaxation.SteadyState.find_steady_state(p)
     pSS = NoWealthTaxation.ModelParams(A = p.A, θ = p.θ, η = p.η, ρ = p.ρ, β = p.β, δ = p.δ, γ = p.γ, r = p.r, k0 = ss.k, T = p.T)
@@ -71,6 +118,21 @@ function test_steady_state_invariance(p::NoWealthTaxation.ModelParams; T = 50.0)
     end
 end
 
+"""
+    test_perturbations(p; factors=[0.9, 1.1])
+
+Runs the legacy solver from multiplicative perturbations around the analytical steady state.
+
+Input arguments:
+- `p::NoWealthTaxation.ModelParams`: baseline model parameters.
+
+Optional parameters:
+- `factors`: vector of scalar multiplicative perturbations applied to steady-state capital.
+
+Output:
+- Returns `nothing`.
+- For each factor, the underlying solve produces trajectories whose length is determined by the solver.
+"""
 function test_perturbations(p::NoWealthTaxation.ModelParams; factors = [0.9, 1.1])
     ss = NoWealthTaxation.SteadyState.find_steady_state(p)
     for α in factors
@@ -89,6 +151,25 @@ function test_perturbations(p::NoWealthTaxation.ModelParams; factors = [0.9, 1.1
     end
 end
 
+"""
+    run_gamma_welfare_scan(; k0=2.0, gamma_values=[...], limit=0, outfile="welfare_gamma_scan.csv", progress=true)
+
+Runs the legacy model over a grid of `γ` values and computes discounted welfare for each solve.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `k0::Float64 = 2.0`: common initial capital used in the scan.
+- `gamma_values::Vector{Float64}`: vector of length `G` containing the `γ` values to scan.
+- `limit::Int = 0`: if positive, truncate the scan to the first `limit` values.
+- `outfile::AbstractString = "welfare_gamma_scan.csv"`: output CSV path.
+- `progress::Bool = true`: print scan progress.
+
+Output:
+- Returns `outfile`.
+- Writes a CSV with two columns and `G_used` data rows.
+"""
 function run_gamma_welfare_scan(; k0::Float64 = 2.0,
     gamma_values::Vector{Float64} = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0],
     limit::Int = 0,
@@ -150,6 +231,23 @@ function run_gamma_welfare_scan(; k0::Float64 = 2.0,
     return outfile
 end
 
+"""
+    run_gamma_kstar_scan(; gamma_values=[...], outfile="gamma_kstar_scan.csv", progress=true)
+
+Runs the analytical steady-state computation over a grid of `γ` values and stores `k*`.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `gamma_values::Vector{Float64}`: vector of length `G` containing the `γ` values to scan.
+- `outfile::AbstractString = "gamma_kstar_scan.csv"`: output CSV path.
+- `progress::Bool = true`: print scan progress.
+
+Output:
+- Returns `outfile`.
+- Writes a CSV with two columns and `G` data rows.
+"""
 function run_gamma_kstar_scan(; gamma_values::Vector{Float64} = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0], outfile::AbstractString = "gamma_kstar_scan.csv", progress::Bool = true)
     out = Array{Any}(undef, length(gamma_values) + 1, 2)
     out[1, 1] = "gamma"
@@ -175,6 +273,23 @@ function run_gamma_kstar_scan(; gamma_values::Vector{Float64} = [0.01, 0.05, 0.1
     return outfile
 end
 
+"""
+    run_gamma_steadystate_welfare_scan(; gamma_values=[...], outfile="gamma_steadystate_welfare_scan.csv", progress=true)
+
+Computes steady-state welfare over a grid of `γ` values without solving transition dynamics.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `gamma_values::Vector{Float64}`: vector of length `G` containing the `γ` values to scan.
+- `outfile::AbstractString = "gamma_steadystate_welfare_scan.csv"`: output CSV path.
+- `progress::Bool = true`: print scan progress.
+
+Output:
+- Returns `outfile`.
+- Writes a CSV with two columns and `G` data rows.
+"""
 function run_gamma_steadystate_welfare_scan(; gamma_values::Vector{Float64} = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0], outfile::AbstractString = "gamma_steadystate_welfare_scan.csv", progress::Bool = true)
     out = Array{Any}(undef, length(gamma_values) + 1, 2)
     out[1, 1] = "gamma"
@@ -204,6 +319,21 @@ function run_gamma_steadystate_welfare_scan(; gamma_values::Vector{Float64} = [0
     return outfile
 end
 
+"""
+    steady_linearization_eigs_kclm(p=NoWealthTaxation.ModelParams())
+
+Builds the steady-state Jacobian of the legacy `(k, c, λ, μ)` system and reports its eigenvalues.
+
+Input arguments:
+- `p::NoWealthTaxation.ModelParams = NoWealthTaxation.ModelParams()`: parameter set.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a named tuple with fields `J`, `eigenvalues`, `classification`, and `counts`.
+- `J` is a `4 x 4` matrix, `eigenvalues` is a vector of length 4, and the remaining fields are scalar diagnostics or short named tuples.
+"""
 function steady_linearization_eigs_kclm(p::NoWealthTaxation.ModelParams = NoWealthTaxation.ModelParams())
     ss = NoWealthTaxation.SteadyState.find_steady_state(p)
     k = max(ss.k, 1e-12)

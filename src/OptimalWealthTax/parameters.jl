@@ -1,3 +1,25 @@
+"""
+    ModelParams(; kwargs...)
+
+Parameter container for the `OptimalWealthTax` model.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `A`, `θ`, `η`, `β`, `ρ`, `δ`, `γ`, `n`, `l`: `Float64` scalars defining technology, preferences, and resource constraints.
+- `k0`, `q0`, `Λ20`: scalar initial conditions for the two states and the `Λ2` costate.
+- `T`: scalar time horizon.
+- `N`: number of collocation grid nodes.
+- `max_iter`: maximum number of nonlinear-solver iterations.
+- `residual_tolerance`: tolerance on the maximum absolute residual.
+- `mesh_power`: exponent controlling the front-loaded time grid.
+- `min_positive`: numerical floor used to avoid divisions by zero.
+
+Output:
+- Returns an immutable struct containing only scalars.
+- It contains no vectors; trajectory lengths are determined later by `N`.
+"""
 @with_kw struct ModelParams
     A::Float64 = 1.0
     θ::Float64 = 0.3

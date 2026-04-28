@@ -1,5 +1,37 @@
+"""
+    default_optimal_wealth_taxation_output_dir()
+
+Returns the default output directory for `OptimalWealthTax` runs.
+
+Input arguments:
+- None.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns an `AbstractString` path.
+- The output is a single path string, not a collection.
+"""
 default_optimal_wealth_taxation_output_dir() = joinpath(normpath(joinpath(@__DIR__, "..")), "outputs", "optimal_wealth_taxation")
 
+"""
+    writeOptimalWealthTaxationResultCSV(result, p, file_path)
+
+Writes the full `OptimalWealthTax` trajectory and transversality diagnostics to CSV.
+
+Input arguments:
+- `result::OptimalWealthTax.CollocationResult`: solution object with trajectory length `N = length(result.t)`.
+- `p::OptimalWealthTax.ModelParams`: model parameters.
+- `file_path::AbstractString`: output CSV path.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns `file_path`.
+- Writes `N` data rows and 12 columns: time, six primal/costate variables, two controls, and three TVC diagnostics.
+"""
 function writeOptimalWealthTaxationResultCSV(result::OptimalWealthTax.CollocationResult, p::OptimalWealthTax.ModelParams, file_path::AbstractString)
     tvc = OptimalWealthTax.transversality_metrics(result, p)
     headers = ["t", "k", "c", "q", "Lambda1", "Lambda2", "Lambda3", "r_tilde", "x", "tvc_k", "tvc_c", "tvc_q"]
@@ -7,6 +39,24 @@ function writeOptimalWealthTaxationResultCSV(result::OptimalWealthTax.Collocatio
     return write_csv_table(file_path, headers, rows)
 end
 
+"""
+    _solveOptimalWealthTaxation(; output_dir=default_optimal_wealth_taxation_output_dir(), progress=true, model_kwargs=(;), solve_kwargs=(;))
+
+Runs the full `OptimalWealthTax` workflow: solve, save CSV, save summary CSV, and save plot.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `output_dir::AbstractString`: directory where outputs are written.
+- `progress::Bool = true`: print run progress.
+- `model_kwargs::NamedTuple = (; )`: keyword overrides passed to `OptimalWealthTax.ModelParams`.
+- `solve_kwargs::NamedTuple = (; )`: keyword overrides passed to `OptimalWealthTax.solve_collocation`.
+
+Output:
+- Returns a named tuple with fields `params`, `solve_kwargs`, `result`, `solution_csv`, `plot_png`, and `summary_csv`.
+- `result` is a `CollocationResult` whose trajectory fields have length `N = params.N` unless the solver exits on a different final stage.
+"""
 function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_optimal_wealth_taxation_output_dir(), progress::Bool = true, model_kwargs::NamedTuple = (;), solve_kwargs::NamedTuple = (;))
     mkpath(output_dir)
     default_model_kwargs = (; T = 120.0, N = 81, max_iter = 1800)

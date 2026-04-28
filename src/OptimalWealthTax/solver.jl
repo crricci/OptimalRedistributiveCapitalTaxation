@@ -1,3 +1,14 @@
+"""
+    CollocationResult
+
+Struct storing the output of a collocation solve for the `OptimalWealthTax` model.
+
+Fields:
+- `success::Bool`: whether the residual tolerance was met.
+- `t`, `k`, `c`, `q`, `Λ1`, `Λ2`, `Λ3`, `r_tilde`, `x`: vectors of length `N = length(t)`.
+- `steady::SteadyStateResult`: scalar steady-state reference used by the solver.
+- `residual_norm::Float64`: maximum absolute residual over the collocation system.
+"""
 struct CollocationResult
     success::Bool
     t::Vector{Float64}
@@ -13,6 +24,22 @@ struct CollocationResult
     residual_norm::Float64
 end
 
+"""
+    print_progress_result(label, result)
+
+Prints a compact progress summary for a collocation result.
+
+Input arguments:
+- `label::AbstractString`: stage or continuation label to print.
+- `result::CollocationResult`: result to summarize.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns `nothing`.
+- Reads scalar diagnostics and the first/last entries of vector fields of length `N`.
+"""
 function print_progress_result(label::AbstractString, result::CollocationResult)
     println("OptimalWealthTax $(label): success=$(result.success) residual=$(result.residual_norm)")
     println("  init  k=$(result.k[1]) q=$(result.q[1]) Λ2=$(result.Λ2[1])")
@@ -20,6 +47,22 @@ function print_progress_result(label::AbstractString, result::CollocationResult)
     return nothing
 end
 
+"""
+    transversality_metrics(result, p)
+
+Computes discounted transversality diagnostics along a collocation path.
+
+Input arguments:
+- `result::CollocationResult`: solution path; all trajectory fields must have common length `N`.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a named tuple with vector fields `k`, `c`, `q`, each of length `N`.
+- The nested field `terminal` contains the final scalar values of those three diagnostics.
+"""
 function transversality_metrics(result::CollocationResult, p::ModelParams)
     discount = exp.(-p.ρ .* result.t)
     k_tvc = discount .* result.Λ1 .* result.k
@@ -29,6 +72,21 @@ function transversality_metrics(result::CollocationResult, p::ModelParams)
     return (; k = k_tvc, c = c_tvc, q = q_tvc, terminal)
 end
 
+"""
+    pack_solution(result)
+
+Packs a structured collocation result into the flat vector layout used by the nonlinear solver.
+
+Input arguments:
+- `result::CollocationResult`: structured solution with trajectory length `N`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length `6N`.
+- The storage order at each node is `(k, c, q, Λ1, Λ2, Λ3)`.
+"""
 function pack_solution(result::CollocationResult)
     N = length(result.t)
     z = zeros(6 * N)
@@ -44,6 +102,23 @@ function pack_solution(result::CollocationResult)
     return z
 end
 
+"""
+    with_initial_conditions(p, k0, q0; Λ20=p.Λ20)
+
+Builds a copy of `ModelParams` with updated initial conditions.
+
+Input arguments:
+- `p::ModelParams`: baseline parameter set.
+- `k0::Real`: initial capital, scalar.
+- `q0::Real`: initial auxiliary state, scalar.
+
+Optional parameters:
+- `Λ20::Real = p.Λ20`: initial value for `Λ2`.
+
+Output:
+- Returns a new `ModelParams` object.
+- All stored quantities are scalars.
+"""
 function with_initial_conditions(p::ModelParams, k0::Real, q0::Real; Λ20::Real = p.Λ20)
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
         n = p.n, l = p.l, k0 = Float64(k0), q0 = Float64(q0), Λ20 = Float64(Λ20), T = p.T, N = p.N,
@@ -51,6 +126,23 @@ function with_initial_conditions(p::ModelParams, k0::Real, q0::Real; Λ20::Real 
     min_positive = p.min_positive)
 end
 
+"""
+    with_horizon(p, T, N)
+
+Builds a copy of `ModelParams` with a different horizon and mesh size.
+
+Input arguments:
+- `p::ModelParams`: baseline parameter set.
+- `T::Real`: scalar time horizon.
+- `N::Integer`: number of collocation nodes.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a new `ModelParams` object.
+- All stored quantities are scalars.
+"""
 function with_horizon(p::ModelParams, T::Real, N::Integer)
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
         n = p.n, l = p.l, k0 = p.k0, q0 = p.q0, Λ20 = p.Λ20, T = Float64(T), N = Int(N),
@@ -58,13 +150,61 @@ function with_horizon(p::ModelParams, T::Real, N::Integer)
         min_positive = p.min_positive)
 end
 
+"""
+    node_offset(i)
+
+Returns the starting offset of node `i` inside the flat collocation vector.
+
+Input arguments:
+- `i::Int`: one-based node index.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns an `Int` scalar.
+- The output is the zero-based offset used before adding component positions `1:6`.
+"""
 node_offset(i::Int) = 6 * (i - 1)
 
+"""
+    node_slice(z, i)
+
+Returns a view of the six variables stored at collocation node `i`.
+
+Input arguments:
+- `z::AbstractVector`: flat collocation vector of length `6N`.
+- `i::Int`: one-based node index.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a vector view of length 6.
+- The order is `(k, c, q, Λ1, Λ2, Λ3)`.
+"""
 function node_slice(z::AbstractVector, i::Int)
     offset = node_offset(i)
     return @view z[offset + 1:offset + 6]
 end
 
+"""
+    collocation_guess_values(k, q, Λ2, steady, p)
+
+Builds a local initial guess for the variables not fixed directly along a collocation seed path.
+
+Input arguments:
+- `k::Real`, `q::Real`, `Λ2::Real`: scalar values at a single node.
+- `steady::SteadyStateResult`: steady-state reference.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns three scalars `(c_guess, Λ1_guess, Λ3_guess)`.
+- Each returned quantity has size `1 x 1`.
+"""
 function collocation_guess_values(k::Real, q::Real, Λ2::Real, steady::SteadyStateResult, p::ModelParams)
     k_guess = max(Float64(k), p.min_positive)
     q_guess = Float64(q)
@@ -87,6 +227,23 @@ function collocation_guess_values(k::Real, q::Real, Λ2::Real, steady::SteadySta
     return c_guess, Λ1_guess, Λ3_guess
 end
 
+"""
+    collocation_guess(p, steady, tgrid)
+
+Constructs the flat initial guess used by the collocation solver on a given time grid.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state anchor.
+- `tgrid::AbstractVector`: time grid of length `N`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length `6N`.
+- The vector stores `(k, c, q, Λ1, Λ2, Λ3)` at every node.
+"""
 function collocation_guess(p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector)
     N = length(tgrid)
     guess = zeros(6 * N)
@@ -108,6 +265,23 @@ function collocation_guess(p::ModelParams, steady::SteadyStateResult, tgrid::Abs
     return guess
 end
 
+"""
+    interpolate_guess(old_t, old_z, new_t)
+
+Interpolates a flat collocation vector from one time grid to another component by component.
+
+Input arguments:
+- `old_t::AbstractVector`: original time grid of length `N_old`.
+- `old_z::AbstractVector`: flat solution vector of length `6N_old`.
+- `new_t::AbstractVector`: target time grid of length `N_new`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length `6N_new`.
+- The component ordering is preserved node by node.
+"""
 function interpolate_guess(old_t::AbstractVector, old_z::AbstractVector, new_t::AbstractVector)
     old_n = length(old_t)
     new_n = length(new_t)
@@ -135,11 +309,44 @@ function interpolate_guess(old_t::AbstractVector, old_z::AbstractVector, new_t::
     return new_z
 end
 
+"""
+    interpolate_state(old_t, old_z, t)
+
+Interpolates the collocation state-costate vector at a single time point.
+
+Input arguments:
+- `old_t::AbstractVector`: original time grid of length `N`.
+- `old_z::AbstractVector`: flat solution vector of length `6N`.
+- `t::Real`: target time.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length 6.
+- The returned order is `(k, c, q, Λ1, Λ2, Λ3)`.
+"""
 function interpolate_state(old_t::AbstractVector, old_z::AbstractVector, t::Real)
     tmp = interpolate_guess(old_t, old_z, [Float64(t)])
     return collect(node_slice(tmp, 1))
 end
 
+"""
+    rescale_time_grid(old_t, new_T)
+
+Rescales an existing time grid so that its final node becomes `new_T`.
+
+Input arguments:
+- `old_t::AbstractVector`: original time grid of length `N`.
+- `new_T::Real`: new terminal time.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length `N`.
+- If the original terminal time is nonpositive, it returns a zero vector of length `N`.
+"""
 function rescale_time_grid(old_t::AbstractVector, new_T::Real)
     old_T = old_t[end]
     if old_T <= 0
@@ -148,11 +355,47 @@ function rescale_time_grid(old_t::AbstractVector, new_T::Real)
     return collect(Float64(new_T) .* (old_t ./ old_T))
 end
 
+"""
+    collocation_grid(p, N)
+
+Builds the front-loaded time grid used by collocation.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+- `N::Int`: number of grid nodes.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length `N`.
+- The first entry is `0.0` and the last entry is `p.T`.
+"""
 function collocation_grid(p::ModelParams, N::Int)
     ξ = range(0.0, 1.0, length = N)
     return collect(p.T .* (ξ .^ p.mesh_power))
 end
 
+"""
+    terminal_residual_values(yT, p, steady, scales, terminal_time, terminal_mode)
+
+Evaluates the terminal residual block associated with a chosen closure rule.
+
+Input arguments:
+- `yT::AbstractVector`: terminal node values; expected length is 6.
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `scales`: tuple of six scalar normalization factors.
+- `terminal_time::Real`: terminal time, scalar.
+- `terminal_mode::Symbol`: one of `:steady_state`, `:costate_steady_state`, `:state_steady_state`, or `:tvc`.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `Vector{Float64}` of length 3.
+- The meaning of the three entries depends on `terminal_mode`.
+"""
 function terminal_residual_values(yT::AbstractVector, p::ModelParams, steady::SteadyStateResult, scales, terminal_time::Real, terminal_mode::Symbol)
     if terminal_mode == :steady_state || terminal_mode == :costate_steady_state
         return [
@@ -178,6 +421,28 @@ function terminal_residual_values(yT::AbstractVector, p::ModelParams, steady::St
     end
 end
 
+"""
+    terminal_residuals!(residual, idx, yT, p, steady, scales, terminal_time, terminal_mode; terminal_alpha=1.0)
+
+Writes the terminal residual block in place into a larger residual vector.
+
+Input arguments:
+- `residual`: residual vector being assembled.
+- `idx::Int`: starting index of the terminal block.
+- `yT::AbstractVector`: terminal node values of length 6.
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `scales`: tuple of six scalar normalization factors.
+- `terminal_time::Real`: terminal time.
+- `terminal_mode::Symbol`: terminal closure mode.
+
+Optional parameters:
+- `terminal_alpha::Float64=1.0`: homotopy weight between state-steady-state closure and TVC closure when `terminal_mode == :tvc`.
+
+Output:
+- Returns `nothing`.
+- Overwrites three consecutive entries of `residual` starting at `idx`.
+"""
 function terminal_residuals!(residual, idx::Int, yT::AbstractVector, p::ModelParams, steady::SteadyStateResult, scales, terminal_time::Real, terminal_mode::Symbol; terminal_alpha::Float64 = 1.0)
     values = terminal_mode == :tvc && terminal_alpha < 1.0 - 1e-12 ?
         (1.0 - terminal_alpha) .* terminal_residual_values(yT, p, steady, scales, terminal_time, :state_steady_state) .+
@@ -187,6 +452,26 @@ function terminal_residuals!(residual, idx::Int, yT::AbstractVector, p::ModelPar
     return nothing
 end
 
+"""
+    collocation_residual!(residual, z, p, steady, tgrid; terminal_mode=:steady_state, terminal_alpha=1.0)
+
+Assembles the full collocation residual vector in place.
+
+Input arguments:
+- `residual`: preallocated residual vector of length `6N`.
+- `z`: flat unknown vector of length `6N`.
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `tgrid::AbstractVector`: time grid of length `N`.
+
+Optional parameters:
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+- `terminal_alpha::Float64 = 1.0`: homotopy weight used by TVC continuation.
+
+Output:
+- Returns `nothing`.
+- Fills `residual` with three initial-condition equations, `6(N-1)` defect equations, and three terminal equations.
+"""
 function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector; terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     N = length(tgrid)
     fill!(residual, 0.0)
@@ -228,6 +513,26 @@ function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateR
     terminal_residuals!(residual, idx, yT, p, steady, scales, tgrid[end], terminal_mode; terminal_alpha = terminal_alpha)
 end
 
+"""
+    unpack_solution(z, p, steady, tgrid, residual_norm, success)
+
+Converts a flat collocation vector into a structured `CollocationResult`.
+
+Input arguments:
+- `z::AbstractVector`: flat vector of length `6N`.
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `tgrid::AbstractVector`: time grid of length `N`.
+- `residual_norm::Real`: scalar residual summary.
+- `success::Bool`: success flag.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a `CollocationResult`.
+- All trajectory fields in the result have length `N`.
+"""
 function unpack_solution(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, residual_norm::Real, success::Bool)
     N = length(tgrid)
     k = zeros(N)
@@ -255,6 +560,26 @@ function unpack_solution(z::AbstractVector, p::ModelParams, steady::SteadyStateR
     return CollocationResult(success, collect(tgrid), k, c, q, Λ1, Λ2, Λ3, r_tilde, x, steady, Float64(residual_norm))
 end
 
+"""
+    evaluate_candidate(z, p, steady, tgrid; success=false, terminal_mode=:steady_state, terminal_alpha=1.0)
+
+Evaluates a flat candidate path by recomputing its residual norm and unpacking it as a structured result.
+
+Input arguments:
+- `z::AbstractVector`: flat vector of length `6N`.
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `tgrid::AbstractVector`: time grid of length `N`.
+
+Optional parameters:
+- `success::Bool=false`: requested success flag before residual verification.
+- `terminal_mode::Symbol=:steady_state`: terminal closure rule.
+- `terminal_alpha::Float64=1.0`: homotopy weight for TVC continuation.
+
+Output:
+- Returns a `CollocationResult` with trajectory length `N`.
+- The final `success` flag is true only if the supplied flag is true and the residual norm is below tolerance.
+"""
 function evaluate_candidate(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector; success::Bool = false, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     residual = zeros(length(z))
     collocation_residual!(residual, z, p, steady, tgrid; terminal_mode = terminal_mode, terminal_alpha = terminal_alpha)
@@ -263,6 +588,23 @@ function evaluate_candidate(z::AbstractVector, p::ModelParams, steady::SteadySta
     return unpack_solution(z, p, steady, tgrid, resnorm, actual_success)
 end
 
+"""
+    solve_nonlinear_system(residual!, guess, p)
+
+Runs `NLsolve.nlsolve` on the collocation residual system with the solver settings stored in `p`.
+
+Input arguments:
+- `residual!`: in-place residual callback.
+- `guess`: initial guess vector, typically length `6N`.
+- `p::ModelParams`: model parameters providing iteration limits.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns the `NLsolve` result object on success.
+- Returns `nothing` if the nonlinear solve throws an exception.
+"""
 function solve_nonlinear_system(residual!, guess, p::ModelParams)
     try
         return nlsolve(residual!, guess; method = :trust_region, iterations = p.max_iter, xtol = 1e-10, ftol = 1e-10, show_trace = false)
@@ -271,6 +613,29 @@ function solve_nonlinear_system(residual!, guess, p::ModelParams)
     end
 end
 
+"""
+    solve_collocation_problem(p, steady; N=p.N, progress=true, initial_t=nothing, initial_z=nothing, use_mesh_continuation=true, terminal_mode=:steady_state, terminal_alpha=1.0)
+
+Solves one collocation problem, optionally using a sequence of coarser meshes before the final grid.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+
+Optional parameters:
+- `N::Int = p.N`: target number of collocation nodes.
+- `progress::Bool = true`: print stage-level progress.
+- `initial_t`: optional previous time grid of length `N_prev`.
+- `initial_z`: optional previous flat solution vector of length `6N_prev`.
+- `use_mesh_continuation::Bool = true`: whether to solve on intermediate mesh sizes first.
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+- `terminal_alpha::Float64 = 1.0`: homotopy weight for TVC continuation.
+
+Output:
+- Returns a tuple `(final_result, previous_t, previous_z)`.
+- `final_result` is a `CollocationResult` with trajectory length equal to the last mesh size used.
+- `previous_t` has length `N_last`, and `previous_z` has length `6N_last`.
+"""
 function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t = nothing, initial_z = nothing, use_mesh_continuation::Bool = true, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     stage_sizes = use_mesh_continuation ? unique(max.(11, [cld(N, 3), cld(2 * N, 3), N])) : [N]
 
@@ -302,6 +667,27 @@ function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N:
     return final_result, previous_t, previous_z
 end
 
+"""
+    continue_horizon(p, steady; N=p.N, progress=true, target_T=p.T, terminal_mode=:steady_state, terminal_alpha=1.0)
+
+Performs horizon continuation from the default short horizon to a target horizon.
+
+Input arguments:
+- `p::ModelParams`: target parameter set.
+- `steady::SteadyStateResult`: steady-state reference.
+
+Optional parameters:
+- `N::Int = p.N`: target number of nodes at the final horizon.
+- `progress::Bool = true`: print continuation progress.
+- `target_T::Real = p.T`: target final horizon.
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+- `terminal_alpha::Float64 = 1.0`: homotopy weight for TVC continuation.
+
+Output:
+- Returns `(final_result, previous_t, previous_z)`.
+- The result trajectories have length equal to the last stage mesh size.
+- `previous_z` is a flat vector of length `6N_last`.
+"""
 function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, target_T::Real = p.T, terminal_mode::Symbol = :steady_state, terminal_alpha::Float64 = 1.0)
     base_T = ModelParams().T
     if target_T <= base_T + 1e-12
@@ -336,6 +722,27 @@ function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.
     return final_result, previous_t, previous_z
 end
 
+"""
+    continue_horizon_stages(p, steady, T_stages; N=p.N, progress=true, terminal_mode=:steady_state, terminal_alpha=1.0)
+
+Performs horizon continuation on an explicit user-provided list of horizon values.
+
+Input arguments:
+- `p::ModelParams`: target parameter set.
+- `steady::SteadyStateResult`: steady-state reference.
+- `T_stages::AbstractVector{<:Real}`: ordered vector of scalar horizons.
+
+Optional parameters:
+- `N::Int = p.N`: target number of nodes at the last stage.
+- `progress::Bool = true`: print stage-level progress.
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+- `terminal_alpha::Float64 = 1.0`: homotopy weight for TVC continuation.
+
+Output:
+- Returns `(final_result, previous_t, previous_z)`.
+- `final_result` stores trajectories on the last successful stage.
+- `previous_t` and `previous_z` describe the same stage in grid and flat-vector form.
+"""
 function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_stages::AbstractVector{<:Real};
     N::Int = p.N,
     progress::Bool = true,
@@ -400,6 +807,24 @@ function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_st
     return final_result, previous_t, previous_z
 end
 
+"""
+    solve_collocation_staged_horizon(p, T_stages; N=p.N, progress=true, terminal_mode=:state_steady_state)
+
+Convenience wrapper that computes the steady state and then runs explicit staged horizon continuation.
+
+Input arguments:
+- `p::ModelParams`: target parameter set.
+- `T_stages::AbstractVector{<:Real}`: ordered horizon stages.
+
+Optional parameters:
+- `N::Int = p.N`: target node count for the final stage.
+- `progress::Bool = true`: print progress.
+- `terminal_mode::Symbol = :state_steady_state`: terminal closure rule.
+
+Output:
+- Returns `(final_result, previous_t, previous_z)`.
+- `final_result` is a `CollocationResult`; `previous_z` is a flat vector of length `6N_last`.
+"""
 function solve_collocation_staged_horizon(p::ModelParams, T_stages::AbstractVector{<:Real};
     N::Int = p.N,
     progress::Bool = true,
@@ -412,6 +837,26 @@ function solve_collocation_staged_horizon(p::ModelParams, T_stages::AbstractVect
         terminal_mode = terminal_mode)
 end
 
+"""
+    solve_bvp_problem(p, steady; N=p.N, progress=true, initial_t, initial_z, terminal_mode=:steady_state)
+
+Runs the BVP refinement step using `BoundaryValueDiffEq` and projects the result back onto the collocation grid.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+
+Optional parameters:
+- `N::Int = p.N`: number of output grid nodes.
+- `progress::Bool = true`: print progress messages.
+- `initial_t`: initial guess time grid of length `N_init`.
+- `initial_z`: initial flat guess vector of length `6N_init`.
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+
+Output:
+- Returns a `CollocationResult` with trajectory length `N`.
+- If the BVP solver fails, the returned result is built from the provided seed after interpolation.
+"""
 function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t, initial_z, terminal_mode::Symbol = :steady_state)
     tspan = (0.0, p.T)
 
@@ -492,6 +937,22 @@ function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p
     return unpack_solution(z, p, steady, tgrid, resnorm, success)
 end
 
+"""
+    compare_solution_paths(reference, candidate)
+
+Compares two collocation solutions on a common grid and reports normalized path differences.
+
+Input arguments:
+- `reference::CollocationResult`: baseline solution with trajectory length `N_ref`.
+- `candidate::CollocationResult`: solution to compare; it may live on a different grid.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns a named tuple of scalar diagnostics and nested named tuples.
+- The output includes scalar success flags, residuals, terminal changes, and maximum normalized component-wise deviations.
+"""
 function compare_solution_paths(reference::CollocationResult, candidate::CollocationResult)
     candidate_z = length(reference.t) == length(candidate.t) && all(reference.t .== candidate.t) ?
         pack_solution(candidate) :
@@ -533,6 +994,24 @@ function compare_solution_paths(reference::CollocationResult, candidate::Colloca
     )
 end
 
+"""
+    refine_with_bvp(reference, p; N=length(reference.t), progress=true, terminal_mode=:state_steady_state)
+
+Runs BVP refinement starting from an existing collocation solution and returns both the refined path and verification diagnostics.
+
+Input arguments:
+- `reference::CollocationResult`: seed solution with trajectory length `N_ref`.
+- `p::ModelParams`: model parameters.
+
+Optional parameters:
+- `N::Int = length(reference.t)`: output grid size for the refined solution.
+- `progress::Bool = true`: print refinement diagnostics.
+- `terminal_mode::Symbol = :state_steady_state`: terminal closure rule.
+
+Output:
+- Returns a named tuple with fields `reference`, `refined`, `verification`, and `preserved_reference`.
+- `reference` and `refined` are `CollocationResult` objects, each with trajectory length `N` after refinement output is formed.
+"""
 function refine_with_bvp(reference::CollocationResult, p::ModelParams;
     N::Int = length(reference.t),
     progress::Bool = true,
@@ -558,11 +1037,38 @@ function refine_with_bvp(reference::CollocationResult, p::ModelParams;
     return (; reference, refined, verification, preserved_reference)
 end
 
+"""
+    continue_initial_conditions(p, steady, previous_t, previous_z; N=p.N, progress=true, base_step=0.025, min_step=1e-4, terminal_mode=:steady_state, terminal_alpha=1.0, label, endpoint)
+
+Performs continuation in the initial conditions starting from a previously solved branch.
+
+Input arguments:
+- `p::ModelParams`: target parameter set.
+- `steady::SteadyStateResult`: steady-state reference.
+- `previous_t`: current time grid of length `N_prev`.
+- `previous_z`: current flat solution vector of length `6N_prev`.
+
+Optional parameters:
+- `N::Int = p.N`: node count used in each continuation attempt.
+- `progress::Bool = true`: print progress.
+- `base_step::Float64 = 0.025`: initial continuation step size in homotopy parameter space.
+- `min_step::Float64 = 1e-4`: minimum accepted continuation step size.
+- `terminal_mode::Symbol = :steady_state`: terminal closure rule.
+- `terminal_alpha::Float64 = 1.0`: homotopy weight for TVC continuation.
+- `label::AbstractString`: label printed during continuation.
+- `endpoint`: callable mapping a scalar `α` to either `(k0, q0)` or `(k0, q0, Λ20)`.
+
+Output:
+- Returns `(current_alpha, final_result, previous_t, previous_z)`.
+- `current_alpha` is a scalar in `[0, 1]`.
+- `final_result` is the last accepted `CollocationResult`, while `previous_z` has length `6N_last`.
+"""
 function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, previous_t, previous_z;
     N::Int = p.N,
     progress::Bool = true,
-    base_step::Float64 = 0.025,
-    min_step::Float64 = 1e-4,
+    base_step::Float64 = 0.005,
+    min_step::Float64 = 1e-5,
+    acceptance_tolerance = nothing,
     terminal_mode::Symbol = :steady_state,
     terminal_alpha::Float64 = 1.0,
     label::AbstractString,
@@ -597,7 +1103,10 @@ function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, 
                 terminal_mode = terminal_mode,
                 terminal_alpha = terminal_alpha)
 
-            if trial_result.success
+            accepted = trial_result.success ||
+                (acceptance_tolerance !== nothing && isfinite(trial_result.residual_norm) && trial_result.residual_norm <= acceptance_tolerance)
+
+            if accepted
                 current_alpha = next_alpha
                 previous_t = trial_t
                 previous_z = trial_z
@@ -621,6 +1130,29 @@ function continue_initial_conditions(p::ModelParams, steady::SteadyStateResult, 
     return current_alpha, final_result, previous_t, previous_z
 end
 
+"""
+    continue_terminal_conditions(p, steady, previous_t, previous_z; N=p.N, progress=true, base_step=0.1, min_step=1e-5, acceptance_tolerance=max(1e-4, 10.0 * p.residual_tolerance))
+
+Performs terminal-condition homotopy from state-steady-state closure toward full TVC closure.
+
+Input arguments:
+- `p::ModelParams`: model parameters.
+- `steady::SteadyStateResult`: steady-state reference.
+- `previous_t`: current time grid of length `N_prev`.
+- `previous_z`: current flat solution vector of length `6N_prev`.
+
+Optional parameters:
+- `N::Int = p.N`: node count for each solve.
+- `progress::Bool = true`: print progress.
+- `base_step::Float64 = 0.1`: initial homotopy step size.
+- `min_step::Float64 = 1e-5`: minimum homotopy step size.
+- `acceptance_tolerance`: scalar threshold used to accept intermediate non-final TVC solves.
+
+Output:
+- Returns `(current_alpha, final_result, previous_t, previous_z)`.
+- `current_alpha` is the accepted TVC homotopy level in `[0, 1]`.
+- `final_result` is the last accepted `CollocationResult`.
+"""
 function continue_terminal_conditions(p::ModelParams, steady::SteadyStateResult, previous_t, previous_z;
     N::Int = p.N,
     progress::Bool = true,
@@ -670,6 +1202,22 @@ function continue_terminal_conditions(p::ModelParams, steady::SteadyStateResult,
     return current_alpha, final_result, previous_t, previous_z
 end
 
+"""
+    better_target_result(lhs, rhs)
+
+Selects the better of two collocation results, prioritizing success and then smaller residual norm.
+
+Input arguments:
+- `lhs::CollocationResult`: first candidate.
+- `rhs::CollocationResult`: second candidate.
+
+Optional parameters:
+- None.
+
+Output:
+- Returns one `CollocationResult`.
+- No trajectory sizes are changed; the returned object is one of the two inputs.
+"""
 function better_target_result(lhs::CollocationResult, rhs::CollocationResult)
     if lhs.success != rhs.success
         return lhs.success ? lhs : rhs
@@ -680,6 +1228,27 @@ function better_target_result(lhs::CollocationResult, rhs::CollocationResult)
     return lhs.residual_norm <= rhs.residual_norm ? lhs : rhs
 end
 
+"""
+    solve_collocation(p=ModelParams(); N=p.N, progress=true, use_continuation=true, use_bvp_refinement=false, use_horizon_continuation=false, terminal_mode=:state_steady_state, use_nested_seed=true)
+
+High-level entry point for solving the `OptimalWealthTax` collocation problem with direct solves, continuation, optional BVP refinement, and optional TVC homotopy.
+
+Input arguments:
+- `p::ModelParams = ModelParams()`: model parameters.
+
+Optional parameters:
+- `N::Int = p.N`: collocation node count.
+- `progress::Bool = true`: print detailed progress information.
+- `use_continuation::Bool = true`: enable continuation strategies in initial conditions.
+- `use_bvp_refinement::Bool = false`: enable BVP-based refinement attempts.
+- `use_horizon_continuation::Bool = false`: enable continuation in the time horizon.
+- `terminal_mode::Symbol = :state_steady_state`: terminal closure rule. Supported values include `:costate_steady_state`, `:state_steady_state`, and `:tvc`.
+- `use_nested_seed::Bool = true`: allow recursive construction of better seeds through easier closure rules.
+
+Output:
+- Returns a `CollocationResult`.
+- Every trajectory field in the result has length equal to the final grid size used by the successful or best failed attempt, typically `N`.
+"""
 function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progress::Bool = true, use_continuation::Bool = true, use_bvp_refinement::Bool = false, use_horizon_continuation::Bool = false, terminal_mode::Symbol = :state_steady_state, use_nested_seed::Bool = true)
     steady = find_steady_state(p)
     progress && println("OptimalWealthTax solve start: terminal_mode=$(terminal_mode) T=$(p.T) N=$(N) k0=$(p.k0) q0=$(p.q0) Λ20=$(p.Λ20)")
@@ -920,6 +1489,7 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
     q_alpha, q_result, previous_t, previous_z = continue_initial_conditions(p, steady, previous_t, previous_z;
         N = N,
         progress = progress,
+        acceptance_tolerance = 5e-2,
         terminal_mode = terminal_mode,
         label = "q0",
         endpoint = α -> (p.k0, steady.q + α * (p.q0 - steady.q), p.Λ20))
@@ -936,7 +1506,7 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
         progress = progress,
         initial_t = previous_t,
         initial_z = previous_z,
-        use_mesh_continuation = true,
+        use_mesh_continuation = false,
         terminal_mode = terminal_mode)
     if target_from_branch.success
         progress && print_progress_result("branch-seeded target solve", target_from_branch)

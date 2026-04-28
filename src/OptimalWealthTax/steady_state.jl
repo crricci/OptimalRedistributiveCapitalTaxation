@@ -1,3 +1,14 @@
+"""
+    SteadyStateResult
+
+Struct storing the steady state of the `OptimalWealthTax` model.
+
+Fields:
+- `k`, `c`, `q`, `Λ1`, `Λ2`, `Λ3`, `r_tilde`, `x`: all are `Float64` scalars.
+
+Dimensions:
+- Each field has size `1 x 1`; this struct contains no time trajectories.
+"""
 struct SteadyStateResult
     k::Float64
     c::Float64
@@ -9,6 +20,23 @@ struct SteadyStateResult
     x::Float64
 end
 
+"""
+    find_steady_state()
+    find_steady_state(p)
+
+Computes the steady state of the `OptimalWealthTax` model.
+
+Input arguments:
+- None for the zero-argument method, which uses `ModelParams()`.
+- `p::ModelParams` for the parameterized method.
+
+Optional parameters:
+- None beyond the fields already stored in `p`.
+
+Output:
+- Returns a `SteadyStateResult`.
+- All components are scalars with size `1 x 1`.
+"""
 find_steady_state() = find_steady_state(ModelParams())
 
 function find_steady_state(p::ModelParams)

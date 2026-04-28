@@ -3,6 +3,23 @@
 using Parameters
 
 # Model parameters structure using Parameters.jl
+"""
+    ModelParams(; kwargs...)
+
+Parameter container for the `NoWealthTaxation` model.
+
+Input arguments:
+- No positional arguments.
+
+Optional parameters:
+- `A`, `θ`, `η`, `ρ`, `β`, `δ`, `γ`, `r`: scalar model parameters.
+- `k0`: scalar initial capital.
+- `T`: scalar time horizon.
+
+Output:
+- Returns an immutable struct containing only scalars.
+- It stores no trajectories; time-series dimensions are determined later by the solver.
+"""
 @with_kw struct ModelParams
     A::Float64 = 1.0      # Productivity parameter
     θ::Float64 = 0.3      # Capital elasticity in production
