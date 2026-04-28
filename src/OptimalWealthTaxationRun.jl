@@ -60,7 +60,7 @@ Output:
 function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_optimal_wealth_taxation_output_dir(), progress::Bool = true, model_kwargs::NamedTuple = (;), solve_kwargs::NamedTuple = (;))
     mkpath(output_dir)
     default_model_kwargs = (; T = 120.0, N = 81, max_iter = 1800)
-    default_solve_kwargs = (; terminal_mode = :state_steady_state)
+    default_solve_kwargs = (; terminal_mode = :costate_steady_state, use_nested_seed = false)
     effective_model_kwargs = merge(default_model_kwargs, model_kwargs)
     effective_solve_kwargs = merge(default_solve_kwargs, solve_kwargs)
 
