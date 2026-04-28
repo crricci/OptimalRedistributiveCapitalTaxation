@@ -123,6 +123,7 @@ function solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=tru
     steady = SteadyState.find_steady_state(p)
     @unpack A, θ, η, ρ, β, δ, γ, r = p
     progress && println("Solving ORCT 4D system (k,c,λ,μ); T=$(round(T,digits=2)) k0=$(p.k0)")
+    progress && println("Target steady state: k*=$(steady.k), c*=$(steady.c), λ*=$(steady.λ)")
 
     # ODE in (k,c,λ,μ). r_tilde depends on (k,λ,μ,c) via interior expression:
     #   r_int = A(1-η)k^{θ-1} - δ - (βγ)/(λ β k + μ c)
@@ -239,14 +240,18 @@ function solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=tru
         for ac in (0.8, 1.0, 1.2), az in (0.8, 1.0, 1.2)
             push!(seeds, [log(max(ac*steady.c,1e-8)), log(max(az*max(steady.λ,1e-6), 1e-8))])
         end
+        progress && println("    shooting seeds=$(length(seeds)) current guess: c0=$(exp(v0_guess[1])) λ0=$(exp(v0_guess[2]))")
         best_v = copy(v0_guess); best_res = Inf
-        for vtry in seeds
+        for (seed_idx, vtry) in enumerate(seeds)
             vtry[1] = clamp(vtry[1], log(1e-8), log(10*max(1.0, steady.c)))
             vtry[2] = clamp(vtry[2], log(1e-8), log(10.0))
             nls = NLsolve.nlsolve(local_res!, vtry; xtol=1e-10, ftol=1e-10, method=:trust_region, autodiff=:forward, iterations=800, show_trace=false)
             Ftmp = zeros(2);
             local_res!(Ftmp, nls.zero)
             resn = hypot(Ftmp[1], Ftmp[2])
+            if debug
+                println("    seed #$(seed_idx): converged=$(nls.f_converged || nls.x_converged) residual=$(resn) c0=$(exp(nls.zero[1])) λ0=$(exp(nls.zero[2])) F=$(Tuple(Ftmp))")
+            end
             if (nls.f_converged || nls.x_converged) && resn < best_res
                 best_res = resn
                 best_v = nls.zero
@@ -259,6 +264,9 @@ function solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=tru
         # keep in domain
         v0_guess[1] = clamp(v0_guess[1], log(1e-8), log(10*max(1.0, steady.c)))
         v0_guess[2] = clamp(v0_guess[2], log(1e-8), log(10.0))
+        stage_F = zeros(2)
+        local_res!(stage_F, v0_guess)
+        progress && println("    selected stage guess: c0=$(exp(v0_guess[1])) λ0=$(exp(v0_guess[2])) residual=$(hypot(stage_F[1], stage_F[2])) F=$(Tuple(stage_F))")
     end
 
     # Try BVP solve (collocation) on (k,c,λ,μ) with stationary landing BCs and μ(0)=0
@@ -284,17 +292,27 @@ function solve_orct(p; T=p.T, N::Int=2001, debug::Bool=false, progress::Bool=tru
         return nothing
     end
     prob_bvp = BVProblem(f!, bc!, guessY, tspan)
-    progress && println("→ Solving BVP …")
+    progress && println("→ Solving BVP … dt=$(max(T/400, 0.02)) initial guess end-state=(k=$(steady.k), c=$(steady.c), λ=$(steady.λ), μ=0.0)")
     sol_bvp = solve(prob_bvp, MIRK6(), dt = max(T/400, 0.02), abstol=1e-9, reltol=1e-9)
+    progress && println("  BVP retcode=$(sol_bvp.retcode)")
     if sol_bvp.retcode == SciMLBase.ReturnCode.Success
-        progress && println("  ✓ BVP converged")
-        tt = Array(sol_bvp.t)
-        Y = reduce(hcat, sol_bvp.u)
-        k = vec(Y[1, :]); c = vec(Y[2, :]); λ = vec(Y[3, :]); μ = vec(Y[4, :])
+        tt_bvp = Array(sol_bvp.t)
+        Y_bvp = reduce(hcat, sol_bvp.u)
+        k_bvp = vec(Y_bvp[1, :]); c_bvp = vec(Y_bvp[2, :]); λ_bvp = vec(Y_bvp[3, :]); μ_bvp = vec(Y_bvp[4, :])
+        kT_bvp = k_bvp[end]
+        cT_bvp = c_bvp[end]
+        λT_bvp = max(λ_bvp[end], 1e-12)
+        denomT_bvp = λT_bvp * β * max(kT_bvp, 1e-12) + μ_bvp[end] * max(cT_bvp, 1e-12)
+        denomT_bvp = denomT_bvp > 1e-12 ? denomT_bvp : 1e-12
+        rT_bvp = A * (1 - η) * max(kT_bvp, 1e-12)^(θ - 1) - δ - (β * γ) / denomT_bvp
+        progress && println("  ✓ BVP converged with terminal state: kT=$(kT_bvp), cT=$(cT_bvp), λT=$(λ_bvp[end]), μT=$(μ_bvp[end]), rT=$(rT_bvp)")
+        tt = tt_bvp
+        k = k_bvp; c = c_bvp; λ = λ_bvp; μ = μ_bvp
     else
-        progress && println("  ↪ BVP failed, falling back to IVP integrate …")
+        progress && println("  ↪ BVP failed, falling back to IVP integrate with c0=$(exp(v0_guess[1])) λ0=$(exp(v0_guess[2]))")
         u0_final = [exp(v0_guess[1]), exp(v0_guess[2])]
         sol = integrate(u0_final, T; save=true)
+        progress && println("  IVP retcode=$(sol.retcode) saved_steps=$(length(sol.t))")
         tt = Array(sol.t)
         Y = reduce(hcat, sol.u)
         k = vec(Y[1, :]); c = vec(Y[2, :]); λ = vec(Y[3, :]); μ = vec(Y[4, :])
