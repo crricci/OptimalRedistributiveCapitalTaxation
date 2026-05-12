@@ -15,6 +15,9 @@ Optional parameters:
 - `residual_tolerance`: tolerance on the maximum absolute residual.
 - `mesh_power`: exponent controlling the front-loaded time grid.
 - `min_positive`: numerical floor used to avoid divisions by zero.
+- `control_kkt_mode`: control reconstruction mode, either `:closed_form` or experimental `:fischer_burmeister`.
+- `control_complementarity_smoothing`: smoothing level used by the experimental complementarity control reconstruction.
+- `active_set_iterations`: number of outer nodewise active-set refinement steps attempted after a failed collocation stage.
 
 Output:
 - Returns an immutable struct containing only scalars.
@@ -39,4 +42,8 @@ Output:
     residual_tolerance::Float64 = 1e-6
     mesh_power::Float64 = 4.0
     min_positive::Float64 = 1e-10
+    control_kkt_mode::Symbol = :closed_form
+    control_bound_smoothing::Float64 = 0.0
+    control_complementarity_smoothing::Float64 = 1e-8
+    active_set_iterations::Int = 0
 end

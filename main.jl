@@ -2,10 +2,10 @@ using Pkg
 Pkg.activate(@__DIR__)
 
 try
-    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve
+    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve, Ipopt, ForwardDiff
 catch
     Pkg.instantiate()
-    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve
+    @eval using DifferentialEquations, BoundaryValueDiffEq, Parameters, PyPlot, NLsolve, Ipopt, ForwardDiff
 end
 
 include(joinpath(@__DIR__, "src", "NoWealthTaxation.jl"))

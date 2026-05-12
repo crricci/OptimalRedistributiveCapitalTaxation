@@ -34,8 +34,9 @@ Output:
 """
 function writeOptimalWealthTaxationResultCSV(result::OptimalWealthTax.CollocationResult, p::OptimalWealthTax.ModelParams, file_path::AbstractString)
     tvc = OptimalWealthTax.transversality_metrics(result, p)
-    headers = ["t", "k", "c", "q", "Lambda1", "Lambda2", "Lambda3", "r_tilde", "x", "tvc_k", "tvc_c", "tvc_q"]
-    rows = ((result.t[i], result.k[i], result.c[i], result.q[i], result.Λ1[i], result.Λ2[i], result.Λ3[i], result.r_tilde[i], result.x[i], tvc.k[i], tvc.c[i], tvc.q[i]) for i in eachindex(result.t))
+    boundary = OptimalWealthTax.boundary_activity_series(result, p)
+    headers = ["t", "k", "c", "q", "Lambda1", "Lambda2", "Lambda3", "r_tilde", "x", "tvc_k", "tvc_c", "tvc_q", "control_denom", "r_tilde_unconstrained", "x_unclamped", "r_tilde_bound_active", "x_floor_active", "denom_nonpositive"]
+    rows = ((result.t[i], result.k[i], result.c[i], result.q[i], result.Λ1[i], result.Λ2[i], result.Λ3[i], result.r_tilde[i], result.x[i], tvc.k[i], tvc.c[i], tvc.q[i], boundary.denom[i], boundary.r_unconstrained[i], boundary.x_unclamped[i], boundary.r_bound_active[i], boundary.x_floor_active[i], boundary.denom_nonpositive[i]) for i in eachindex(result.t))
     return write_csv_table(file_path, headers, rows)
 end
 
@@ -63,6 +64,8 @@ function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_opti
     default_solve_kwargs = (; terminal_mode = :tvc, use_nested_seed = true)
     effective_model_kwargs = merge(default_model_kwargs, model_kwargs)
     effective_solve_kwargs = merge(default_solve_kwargs, solve_kwargs)
+    effective_terminal_mode = OptimalWealthTax.canonical_terminal_mode(effective_solve_kwargs.terminal_mode)
+    effective_solve_kwargs = merge(effective_solve_kwargs, (; terminal_mode = effective_terminal_mode))
 
     progress && println("OptimalWealthTaxation run start")
     progress && println("  output_dir=$(output_dir)")
@@ -71,7 +74,8 @@ function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_opti
 
     p = OptimalWealthTax.ModelParams(; effective_model_kwargs...)
     result = OptimalWealthTax.solve_collocation(p; progress = progress, effective_solve_kwargs...)
-    tvc = OptimalWealthTax.transversality_metrics(result, p)
+    tvc = OptimalWealthTax.transversality_metrics(result, p; terminal_mode = effective_solve_kwargs.terminal_mode)
+    boundary = OptimalWealthTax.boundary_activity_metrics(result, p)
 
     csv_path = joinpath(output_dir, "OptimalWealthTaxation_solution.csv")
     png_path = joinpath(output_dir, "OptimalWealthTaxation_solution.png")
@@ -80,8 +84,8 @@ function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_opti
     writeOptimalWealthTaxationResultCSV(result, p, csv_path)
     OptimalWealthTax.plot_solution(result, "OptimalWealthTaxation path", png_path; force = true)
     write_csv_table(summary_path,
-        ["success", "residual_norm", "terminal_mode", "horizon_T", "mesh_N", "final_k", "steady_k", "final_c", "steady_c", "final_q", "steady_q", "terminal_tvc_k", "terminal_tvc_c", "terminal_tvc_q", "solution_csv", "plot_png"],
-        [(result.success, result.residual_norm, String(effective_solve_kwargs.terminal_mode), p.T, p.N, result.k[end], result.steady.k, result.c[end], result.steady.c, result.q[end], result.steady.q, tvc.terminal.k, tvc.terminal.c, tvc.terminal.q, csv_path, png_path)])
+        ["success", "residual_norm", "terminal_mode", "terminal_mid_label", "horizon_T", "mesh_N", "final_k", "steady_k", "final_c", "steady_c", "final_q", "steady_q", "terminal_tvc_k", "terminal_tvc_c", "terminal_tvc_q", "r_tilde_bound_fraction", "x_floor_fraction", "denom_nonpositive_fraction", "q_near_zero_fraction", "r_tilde_bound_terminal", "x_floor_terminal", "denom_nonpositive_terminal", "min_control_denom", "min_x_unclamped", "min_q", "solution_csv", "plot_png"],
+        [(result.success, result.residual_norm, String(effective_solve_kwargs.terminal_mode), "exp(-rho T) * c(T)^(-beta) * k(T)", p.T, p.N, result.k[end], result.steady.k, result.c[end], result.steady.c, result.q[end], result.steady.q, tvc.terminal.k, tvc.terminal.c, tvc.terminal.q, boundary.r_bound_fraction, boundary.x_floor_fraction, boundary.denom_nonpositive_fraction, boundary.q_near_zero_fraction, boundary.r_bound_terminal, boundary.x_floor_terminal, boundary.denom_nonpositive_terminal, boundary.min_denom, boundary.min_x_unclamped, boundary.min_q, csv_path, png_path)])
 
     if progress
         println("OptimalWealthTaxation run complete")
@@ -89,6 +93,8 @@ function _solveOptimalWealthTaxation(; output_dir::AbstractString = default_opti
         println("  final  k=$(result.k[end]) c=$(result.c[end]) q=$(result.q[end])")
         println("  steady k=$(result.steady.k) c=$(result.steady.c) q=$(result.steady.q)")
         println("  tvc    k=$(tvc.terminal.k) c=$(tvc.terminal.c) q=$(tvc.terminal.q)")
+        println("  bounds r~0 frac=$(boundary.r_bound_fraction) x-floor frac=$(boundary.x_floor_fraction) denom<=0 frac=$(boundary.denom_nonpositive_fraction)")
+        println("  mins   denom=$(boundary.min_denom) x_unclamped=$(boundary.min_x_unclamped) q=$(boundary.min_q)")
         println("  solution_csv=$(csv_path)")
         println("  summary_csv=$(summary_path)")
         println("  plot_png=$(png_path)")

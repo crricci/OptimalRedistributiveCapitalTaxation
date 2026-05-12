@@ -44,6 +44,70 @@ function production_terms(k::Real, p::ModelParams)
     return (; F, Fk, Fn, Fkk, Fnk)
 end
 
+function control_reconstruction_terms(y::AbstractVector{<:Real}, p::ModelParams)
+    k, c, q, Λ1, Λ2 = y[1], y[2], y[3], y[4], y[5]
+    if !(isfinite(k) && isfinite(c) && isfinite(q) && isfinite(Λ1) && isfinite(Λ2))
+        return nothing
+    end
+
+    k_eff = max(k, p.min_positive)
+    c_eff = max(c, p.min_positive)
+    sum_eff = max(k + q, p.min_positive)
+    terms = production_terms(k_eff, p)
+    resource_term = terms.F - p.δ * k_eff - terms.Fn + q * (terms.Fk - p.δ)
+    denom = Λ1 * sum_eff + Λ2 * c_eff / p.β
+    if !(isfinite(resource_term) && isfinite(denom))
+        return nothing
+    end
+
+    r_unconstrained = if denom > p.min_positive
+        resource_term / sum_eff - p.γ / denom
+    else
+        -Inf
+    end
+
+    return (; k_eff, c_eff, sum_eff, resource_term, denom, r_unconstrained, terms...)
+end
+
+function control_multiplier(base, r_tilde, p::ModelParams)
+    x_unclamped = base.resource_term - base.sum_eff * r_tilde
+    x_eff = max(x_unclamped, p.min_positive)
+    multiplier = p.γ * base.sum_eff / x_eff - base.denom
+    return multiplier, x_eff
+end
+
+smooth_fischer_burmeister(a, b, ε) = sqrt(a^2 + b^2 + 2.0 * ε^2) - a - b
+
+function complementarity_implied_control(base, p::ModelParams)
+    if !(isfinite(base.resource_term) && isfinite(base.sum_eff) && isfinite(base.denom))
+        return nothing
+    end
+
+    if base.resource_term <= p.min_positive
+        return 0.0
+    end
+
+    r_upper = max((base.resource_term - p.min_positive) / base.sum_eff, 0.0)
+    r_tilde = clamp(max(base.r_unconstrained, 0.0), 0.0, r_upper)
+    ε = max(p.control_complementarity_smoothing, 0.0)
+
+    for _ in 1:8
+        multiplier, x_eff = control_multiplier(base, r_tilde, p)
+        radius = sqrt(r_tilde^2 + multiplier^2 + 2.0 * ε^2)
+        phi = radius - r_tilde - multiplier
+        multiplier_prime = p.γ * base.sum_eff^2 / x_eff^2
+        phi_prime = (r_tilde + multiplier * multiplier_prime) / max(radius, p.min_positive) - 1.0 - multiplier_prime
+        if !isfinite(phi) || !isfinite(phi_prime)
+            return nothing
+        end
+        step = phi_prime == 0 ? zero(phi) : phi / phi_prime
+        candidate = clamp(r_tilde - step, 0.0, r_upper)
+        r_tilde = isfinite(candidate) ? candidate : r_tilde
+    end
+
+    return r_tilde
+end
+
 """
     foc_implied_controls(y, p)
 
@@ -61,43 +125,53 @@ Output:
 - Otherwise returns a named tuple with scalar fields `r_tilde`, `x`, `F`, `Fk`, `Fn`, `Fkk`, and `Fnk`.
 - All returned components have size `1 x 1`.
 """
-function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams)
-    k, c, q, Λ1, Λ2 = y[1], y[2], y[3], y[4], y[5]
-    if !(isfinite(k) && isfinite(c) && isfinite(q) && isfinite(Λ1) && isfinite(Λ2))
-        return nothing
-    end
-
-    k_eff = max(k, p.min_positive)
-    c_eff = max(c, p.min_positive)
-    sum_eff = max(k + q, p.min_positive)
-    terms = production_terms(k_eff, p)
-    resource_term = terms.F - p.δ * k_eff - terms.Fn + q * (terms.Fk - p.δ)
-
-    denom = Λ1 * sum_eff + Λ2 * c_eff / p.β
-    if !isfinite(denom)
+function foc_implied_controls(y::AbstractVector{<:Real}, p::ModelParams; active_bound::Union{Nothing, Bool} = nothing)
+    base = control_reconstruction_terms(y, p)
+    if base === nothing
         return nothing
     end
 
     # KKT-implied effective return: take the interior maximizer when feasible,
     # then enforce the admissible set r_tilde >= 0.
-    r_unconstrained = if denom > p.min_positive
-        resource_term / sum_eff - p.γ / denom
+    r_tilde = if active_bound === true
+        0.0
+    elseif active_bound === false
+        if !isfinite(base.r_unconstrained) || base.r_unconstrained <= 0.0
+            return nothing
+        end
+        base.r_unconstrained
+    elseif p.control_kkt_mode == :fischer_burmeister
+        candidate = complementarity_implied_control(base, p)
+        if candidate === nothing
+            return nothing
+        end
+        candidate
+    elseif p.control_kkt_mode == :closed_form
+        if isfinite(base.r_unconstrained)
+            if p.control_bound_smoothing > 0.0
+                # Smooth lower-bound projection for the active-bound regime r_tilde >= 0.
+                0.5 * (base.r_unconstrained + sqrt(base.r_unconstrained^2 + p.control_bound_smoothing^2))
+            else
+                max(0.0, base.r_unconstrained)
+            end
+        else
+            0.0
+        end
     else
-        -Inf
+        error("Unsupported control_kkt_mode=$(p.control_kkt_mode)")
     end
-    r_tilde = max(0.0, r_unconstrained)
 
     if !isfinite(r_tilde)
         return nothing
     end
 
-    x = resource_term - sum_eff * r_tilde
+    x = base.resource_term - base.sum_eff * r_tilde
     x = (!isfinite(x) || x <= p.min_positive) ? p.min_positive : x
     if !isfinite(x)
         return nothing
     end
 
-    return (; r_tilde, x, terms...)
+    return (; r_tilde, x, F = base.F, Fk = base.Fk, Fn = base.Fn, Fkk = base.Fkk, Fnk = base.Fnk)
 end
 
 """
@@ -116,8 +190,8 @@ Output:
 - Returns a `Vector{Float64}` of length 6 containing `(dk, dc, dq, dΛ1, dΛ2, dΛ3)`.
 - If the controls are not numerically defined, it returns a vector of six `NaN` values.
 """
-function dynamics(y::AbstractVector{<:Real}, p::ModelParams)
-    controls = foc_implied_controls(y, p)
+function dynamics(y::AbstractVector{<:Real}, p::ModelParams; active_bound::Union{Nothing, Bool} = nothing)
+    controls = foc_implied_controls(y, p; active_bound = active_bound)
     if controls === nothing
         return fill(NaN, 6)
     end
