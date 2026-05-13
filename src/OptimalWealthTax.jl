@@ -17,7 +17,7 @@ export ModelParams
 export SteadyStateResult, find_steady_state
 export CollocationResult, solve_collocation, solve_shooting, solve_multiple_shooting
 export continue_horizon_stages, solve_collocation_staged_horizon
-export refine_with_bvp, compare_solution_paths
+export refine_with_bvp, refine_with_explicit_control, compare_solution_paths
 export transversality_metrics
 export control_reconstruction_diagnostics, boundary_activity_series, boundary_activity_metrics
 export production_terms, foc_implied_controls, dynamics
