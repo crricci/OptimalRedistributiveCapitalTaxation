@@ -50,7 +50,36 @@ end
 canonical_terminal_mode(terminal_mode::Symbol) = terminal_mode == :tvc_lambda2c ? :tvc : terminal_mode
 is_tvc_like_terminal_mode(terminal_mode::Symbol) = canonical_terminal_mode(terminal_mode) == :tvc
 
+preserve_stage_nodes(terminal_mode::Symbol) = canonical_terminal_mode(terminal_mode) == :linearized_stable_manifold
+
 continuation_q_anchor(::ModelParams) = 0.0
+
+const STEADY_LINEARIZATION_CACHE = Dict{Tuple, Any}()
+
+function steady_state_linearization_cache_key(p::ModelParams)
+    return (
+        p.A,
+        p.θ,
+        p.η,
+        p.β,
+        p.ρ,
+        p.δ,
+        p.γ,
+        p.n,
+        p.l,
+        p.min_positive,
+        p.control_kkt_mode,
+        p.control_bound_smoothing,
+        p.control_complementarity_smoothing,
+    )
+end
+
+function steady_state_linearization_cached(p::ModelParams)
+    key = steady_state_linearization_cache_key(p)
+    return get!(STEADY_LINEARIZATION_CACHE, key) do
+        steady_state_linearization(p)
+    end
+end
 
 function tvc_seed_terminal_mode(p::ModelParams)
     q_anchor = continuation_q_anchor(p)
@@ -69,6 +98,33 @@ function terminal_middle_metric(c, k, Λ2, p::ModelParams, terminal_mode::Symbol
     else
         error("Unsupported TVC-like terminal_mode=$(terminal_mode)")
     end
+end
+
+function linearized_terminal_residual_values(yT::AbstractVector, p::ModelParams, steady::SteadyStateResult, scales)
+    linearization = steady_state_linearization_cached(p)
+    basis = linearization.center_stable_complement_basis
+    if size(basis, 2) != 3
+        return fill(1e6, 3)
+    end
+
+    scale_vector = collect(Float64, scales)
+    deviation = [
+        yT[1] - steady.k,
+        yT[2] - steady.c,
+        yT[3] - steady.q,
+        yT[4] - steady.Λ1,
+        yT[5] - steady.Λ2,
+        yT[6] - steady.Λ3,
+    ]
+    if !all(isfinite, deviation)
+        return fill(1e6, 3)
+    end
+
+    scaled_basis = Diagonal(scale_vector) * basis
+    scaled_deviation = deviation ./ scale_vector
+    residuals = vec(transpose(scaled_basis) * scaled_deviation)
+    normalizers = [max(norm(view(scaled_basis, :, j)), 1.0) for j in 1:size(scaled_basis, 2)]
+    return residuals ./ normalizers
 end
 
 """
@@ -166,6 +222,32 @@ end
 
 function active_bound_masks_equal(lhs, rhs)
     return all(lhs.node_active .== rhs.node_active) && all(lhs.midpoint_active .== rhs.midpoint_active)
+end
+
+function prefix_active_bound_masks(N::Int, active_segments::Int)
+    clamped_segments = clamp(active_segments, 0, max(N - 1, 0))
+    node_active = falses(N)
+    midpoint_active = falses(max(N - 1, 0))
+    if clamped_segments > 0
+        node_active[1:clamped_segments + 1] .= true
+        midpoint_active[1:clamped_segments] .= true
+    elseif N > 0
+        node_active[1] = false
+    end
+    return (; node_active, midpoint_active)
+end
+
+function active_prefix_segment_count(result::CollocationResult, p::ModelParams)
+    series = boundary_activity_series(result, p)
+    active_segments = 0
+    for is_active in series.r_bound_active[1:end-1]
+        if is_active
+            active_segments += 1
+        else
+            break
+        end
+    end
+    return active_segments
 end
 
 function should_try_active_set_stage(result::CollocationResult, p::ModelParams)
@@ -626,6 +708,8 @@ function terminal_residual_values(yT::AbstractVector, p::ModelParams, steady::St
             discount * yT[6] * yT[3],
             (yT[2] - steady.c) / scales[2],
         ]
+    elseif terminal_mode == :linearized_stable_manifold
+        return linearized_terminal_residual_values(yT, p, steady, scales)
     elseif is_tvc_like_terminal_mode(terminal_mode)
         discount = exp(-p.ρ * terminal_time)
         return [
@@ -707,14 +791,7 @@ function collocation_residual!(residual, z, p::ModelParams, steady::SteadyStateR
         max(abs(p.q0), 1.0),
         max(abs(p.Λ20), 1.0),
     )
-    scales = (
-        max(abs(p.k0), abs(steady.k), 1.0),
-        max(abs(steady.c), 1.0),
-        max(abs(p.q0), abs(steady.q), 1.0),
-        max(abs(steady.Λ1), 1.0),
-        max(abs(p.Λ20), abs(steady.Λ2), 1.0),
-        max(abs(steady.Λ3), 1.0),
-    )
+    scales = shooting_scales(p, steady)
 
     y0 = node_slice(z, 1)
     residual[idx] = (y0[1] - p.k0) / initial_scales[1]
@@ -887,6 +964,55 @@ function solve_active_set_stage(p::ModelParams, steady::SteadyStateResult, tgrid
             break
         end
         masks = new_masks
+    end
+
+    return best_result, best_z
+end
+
+function solve_prefix_boundary_stage(p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, guess::AbstractVector, active_segments::Int;
+    progress::Bool = true,
+    terminal_mode::Symbol = :steady_state,
+    terminal_alpha::Float64 = 1.0)
+    masks = prefix_active_bound_masks(length(tgrid), active_segments)
+    residual!(F, z) = collocation_residual!(F, z, p, steady, tgrid;
+        terminal_mode = terminal_mode,
+        terminal_alpha = terminal_alpha,
+        active_bound_nodes = masks.node_active,
+        active_bound_midpoints = masks.midpoint_active)
+    F = zeros(length(guess))
+    residual!(F, guess)
+    progress && println("  prefix-switch segments=$(active_segments) masked_residual=$(maximum(abs.(F)))")
+    nls = solve_nonlinear_system(residual!, guess, p; show_trace = progress)
+    z = nls === nothing ? guess : nls.zero
+    candidate = evaluate_candidate(z, p, steady, tgrid;
+        success = false,
+        terminal_mode = terminal_mode,
+        terminal_alpha = terminal_alpha)
+    progress && println("  prefix-switch segments=$(active_segments) true_residual=$(candidate.residual_norm)")
+    return candidate, copy(z)
+end
+
+function solve_prefix_boundary_search(p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, guess::AbstractVector, reference::CollocationResult;
+    progress::Bool = true,
+    terminal_mode::Symbol = :steady_state,
+    terminal_alpha::Float64 = 1.0)
+    N = length(tgrid)
+    heuristic_segments = active_prefix_segment_count(reference, p)
+    candidates = unique(vcat(
+        clamp.(heuristic_segments .+ (-3:3), 0, max(N - 1, 0)),
+        [0, max(0, heuristic_segments), max(0, N - 1)]))
+
+    best_result = reference
+    best_z = copy(guess)
+    for active_segments in sort(candidates)
+        candidate, z = solve_prefix_boundary_stage(p, steady, tgrid, guess, active_segments;
+            progress = progress,
+            terminal_mode = terminal_mode,
+            terminal_alpha = terminal_alpha)
+        if better_target_result(candidate, best_result) === candidate
+            best_result = candidate
+            best_z = z
+        end
     end
 
     return best_result, best_z
@@ -1201,7 +1327,7 @@ function shooting_result_from_solution(sol, root::AbstractVector, p::ModelParams
         z[node_offset(i) + 1:node_offset(i) + 6] .= yi
     end
     resnorm = maximum(abs.(root))
-    success = isfinite(resnorm) && resnorm <= p.residual_tolerance && terminal_mode == :tvc
+    success = isfinite(resnorm) && resnorm <= p.residual_tolerance && (terminal_mode == :tvc || terminal_mode == :linearized_stable_manifold)
     return unpack_solution(z, p, steady, tgrid, resnorm, success)
 end
 
@@ -1700,7 +1826,7 @@ function solve_multiple_shooting_stage(p::ModelParams, steady::SteadyStateResult
 end
 
 """
-    solve_multiple_shooting(p=ModelParams(); progress=true, terminal_mode=:tvc, use_horizon_continuation=true, output_N=max(p.N, 201), segment_length=2.0)
+    solve_multiple_shooting(p=ModelParams(); progress=true, terminal_mode=:tvc, use_horizon_continuation=true, output_N=max(p.N, 201), segment_length=2.0, initial_reference=nothing)
 
 High-level multiple-shooting solver for the `OptimalWealthTax` model.
 
@@ -1713,6 +1839,7 @@ Optional parameters:
 - `use_horizon_continuation::Bool = true`: solve intermediate horizons before the target horizon.
 - `output_N::Int = max(p.N, 201)`: output grid size for the returned path.
 - `segment_length::Real = 2.0`: target maximum segment length.
+- `initial_reference=nothing`: optional reference path used to seed the first target stage.
 
 Output:
 - Returns a `CollocationResult` from the target horizon stage.
@@ -1722,10 +1849,11 @@ function solve_multiple_shooting(p::ModelParams = ModelParams();
     terminal_mode::Symbol = :tvc,
     use_horizon_continuation::Bool = true,
     output_N::Int = max(p.N, 201),
-    segment_length::Real = 2.0)
+    segment_length::Real = 2.0,
+    initial_reference = nothing)
     steady = find_steady_state(p)
     T_stages = use_horizon_continuation ? default_shooting_horizon_stages(p.T) : [p.T]
-    reference = nothing
+    reference = initial_reference
     target_result = nothing
     last_stage_result = nothing
 
@@ -1797,6 +1925,19 @@ function solve_collocation_problem(p::ModelParams, steady::SteadyStateResult; N:
         final_result = unpack_solution(previous_z, p, steady, previous_t, resnorm, success)
         progress && print_progress_result("stage N=$(Ncur)", final_result)
 
+        if !final_result.success && should_try_active_set_stage(final_result, p)
+            progress && println("OptimalWealthTax collocation prefix-switch fallback N=$(Ncur)")
+            prefix_result, prefix_z = solve_prefix_boundary_search(p, steady, tgrid, previous_z, final_result;
+                progress = progress,
+                terminal_mode = terminal_mode,
+                terminal_alpha = terminal_alpha)
+            if better_target_result(prefix_result, final_result) === prefix_result
+                final_result = prefix_result
+                previous_z = prefix_z
+            end
+            progress && print_progress_result("stage N=$(Ncur) prefix-switch", final_result)
+        end
+
         if p.active_set_iterations > 0 && !final_result.success && should_try_active_set_stage(final_result, p)
             progress && println("OptimalWealthTax collocation active-set fallback N=$(Ncur)")
             active_result, active_z = solve_active_set_stage(p, steady, tgrid, previous_z;
@@ -1851,9 +1992,10 @@ function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.
     previous_t = nothing
     previous_z = nothing
     final_result = nothing
+    fixed_stage_nodes = preserve_stage_nodes(terminal_mode)
 
     for T_stage in T_stages
-        N_stage = max(11, round(Int, 1 + (N - 1) * T_stage / target_T))
+        N_stage = fixed_stage_nodes ? N : max(11, round(Int, 1 + (N - 1) * T_stage / target_T))
         stage_params = with_horizon(p, T_stage, N_stage)
         stage_t = previous_t === nothing ? nothing : rescale_time_grid(previous_t, T_stage)
         progress && println("OptimalWealthTax horizon continuation T=$(round(T_stage; digits = 4)) N=$(N_stage)")
@@ -1872,6 +2014,94 @@ function continue_horizon(p::ModelParams, steady::SteadyStateResult; N::Int = p.
     end
 
     return final_result, previous_t, previous_z
+end
+
+function continue_horizon_adaptive(p::ModelParams, steady::SteadyStateResult;
+    N::Int = p.N,
+    progress::Bool = true,
+    target_T::Real = p.T,
+    initial_T::Real = min(10.0, p.T),
+    base_step::Float64 = 10.0,
+    min_step::Float64 = 0.25,
+    acceptance_tolerance = nothing,
+    terminal_mode::Symbol = :steady_state,
+    terminal_alpha::Float64 = 1.0,
+    use_nested_seed::Bool = false)
+    target_T = Float64(target_T)
+    current_T = Float64(initial_T)
+    if target_T <= current_T + 1e-12
+        stage_params = with_horizon(p, target_T, N)
+        return solve_collocation(stage_params;
+            N = N,
+            progress = progress,
+            use_continuation = true,
+            use_bvp_refinement = false,
+            use_horizon_continuation = false,
+            terminal_mode = terminal_mode,
+            use_nested_seed = use_nested_seed), nothing, nothing
+    end
+
+    start_params = with_horizon(p, current_T, N)
+    current_result = solve_collocation(start_params;
+        N = N,
+        progress = progress,
+        use_continuation = true,
+        use_bvp_refinement = false,
+        use_horizon_continuation = false,
+        terminal_mode = terminal_mode,
+        use_nested_seed = use_nested_seed)
+    current_t = current_result.t
+    current_z = pack_solution(current_result)
+    accepted = current_result.success ||
+        (acceptance_tolerance !== nothing && isfinite(current_result.residual_norm) && current_result.residual_norm <= acceptance_tolerance)
+    if !accepted
+        return current_result, current_t, current_z
+    end
+
+    current_step = base_step
+    while current_T < target_T - 1e-12
+        step = min(current_step, target_T - current_T)
+        step_success = false
+
+        while step >= min_step - 1e-12
+            next_T = min(target_T, current_T + step)
+            stage_params = with_horizon(p, next_T, N)
+            stage_t = rescale_time_grid(current_t, next_T)
+            progress && println("OptimalWealthTax adaptive horizon continuation T=$(round(next_T; digits = 4)) N=$(N)")
+            trial_result, trial_t, trial_z = solve_collocation_problem(stage_params, steady;
+                N = N,
+                progress = progress,
+                initial_t = stage_t,
+                initial_z = current_z,
+                use_mesh_continuation = false,
+                terminal_mode = terminal_mode,
+                terminal_alpha = terminal_alpha)
+            progress && print_progress_result("adaptive horizon T=$(round(next_T; digits = 4))", trial_result)
+
+            accepted = trial_result.success ||
+                (acceptance_tolerance !== nothing && isfinite(trial_result.residual_norm) && trial_result.residual_norm <= acceptance_tolerance)
+            if accepted
+                current_T = next_T
+                current_t = trial_t
+                current_z = trial_z
+                current_result = trial_result
+                current_step = min(base_step, max(step, min_step))
+                step_success = true
+                break
+            end
+
+            step *= 0.5
+            if step >= min_step - 1e-12
+                progress && println("  reducing adaptive horizon step to $(round(step; digits = 4))")
+            end
+        end
+
+        if !step_success
+            return current_result, current_t, current_z
+        end
+    end
+
+    return current_result, current_t, current_z
 end
 
 """
@@ -1907,10 +2137,12 @@ function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_st
     previous_z = nothing
     final_result = nothing
     target_T = Float64(last(T_stages))
+    nested_seed_required = is_tvc_like_terminal_mode(terminal_mode) || terminal_mode == :linearized_stable_manifold
+    fixed_stage_nodes = preserve_stage_nodes(terminal_mode)
 
     for (stage_idx, T_stage_raw) in enumerate(T_stages)
         T_stage = Float64(T_stage_raw)
-        N_stage = max(11, round(Int, 1 + (N - 1) * T_stage / target_T))
+        N_stage = fixed_stage_nodes ? N : max(11, round(Int, 1 + (N - 1) * T_stage / target_T))
         stage_params = with_horizon(p, T_stage, N_stage)
         progress && println("OptimalWealthTax staged horizon continuation T=$(round(T_stage; digits = 4)) N=$(N_stage)")
 
@@ -1922,7 +2154,7 @@ function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_st
                 use_bvp_refinement = false,
                 use_horizon_continuation = false,
                 terminal_mode = terminal_mode,
-                use_nested_seed = is_tvc_like_terminal_mode(terminal_mode))
+                use_nested_seed = nested_seed_required)
             previous_t = final_result.t
             previous_z = pack_solution(final_result)
         else
@@ -1951,7 +2183,7 @@ function continue_horizon_stages(p::ModelParams, steady::SteadyStateResult, T_st
                     use_bvp_refinement = false,
                     use_horizon_continuation = false,
                     terminal_mode = terminal_mode,
-                    use_nested_seed = is_tvc_like_terminal_mode(terminal_mode))
+                    use_nested_seed = nested_seed_required)
                 final_result = better_target_result(propagated_result, fallback_result)
                 previous_t = final_result.t
                 previous_z = pack_solution(final_result)
@@ -2036,6 +2268,7 @@ Output:
 function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p.N, progress::Bool = true, initial_t, initial_z, terminal_mode::Symbol = :steady_state)
     terminal_mode = canonical_terminal_mode(terminal_mode)
     tspan = (0.0, p.T)
+    scales = shooting_scales(p, steady)
 
     function f!(du, u, _, t)
         dy = dynamics(u, p)
@@ -2072,6 +2305,8 @@ function solve_bvp_problem(p::ModelParams, steady::SteadyStateResult; N::Int = p
                 res[5] = controls.r_tilde - p.ρ
                 res[6] = ub[3] - steady.q
             end
+        elseif terminal_mode == :linearized_stable_manifold
+            res[4:6] .= terminal_residual_values(ub, p, steady, scales, p.T, terminal_mode)
         elseif is_tvc_like_terminal_mode(terminal_mode)
             discount = exp(-p.ρ * p.T)
             res[4] = discount * ub[4] * ub[1]
@@ -2730,13 +2965,15 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
             end
         end
 
+        multiple_shooting_reference = reduce(better_target_result, failed_target_attempts)
         progress && println("OptimalWealthTax attempting multiple-shooting seed for TVC")
         multiple_shooting_result = solve_multiple_shooting(p;
             progress = progress,
             terminal_mode = terminal_mode,
             use_horizon_continuation = false,
             output_N = max(N, 101),
-            segment_length = 2.0)
+            segment_length = 2.0,
+            initial_reference = multiple_shooting_reference)
         push!(failed_target_attempts, multiple_shooting_result)
         if multiple_shooting_result.success
             progress && print_progress_result("multiple-shooting TVC solve", multiple_shooting_result)
@@ -2804,7 +3041,22 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
 
     seed_t = nothing
     seed_z = nothing
-    if terminal_mode == :state_steady_state && use_nested_seed
+    if terminal_mode == :linearized_stable_manifold && use_nested_seed
+        progress && println("OptimalWealthTax building seed from state_steady_state closure")
+        seed_result = solve_collocation(p;
+            N = N,
+            progress = progress,
+            use_continuation = use_continuation,
+            use_bvp_refinement = false,
+            use_horizon_continuation = use_horizon_continuation,
+            terminal_mode = :state_steady_state,
+            use_nested_seed = true)
+        if isfinite(seed_result.residual_norm)
+            seed_t = seed_result.t
+            seed_z = pack_solution(seed_result)
+            progress && print_progress_result("seed result", seed_result)
+        end
+    elseif terminal_mode == :state_steady_state && use_nested_seed
         progress && println("OptimalWealthTax building seed from costate_steady_state closure")
         seed_result = solve_collocation(p;
             N = N,
@@ -2819,6 +3071,52 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
             seed_z = pack_solution(seed_result)
             progress && print_progress_result("seed result", seed_result)
         end
+    end
+
+    if terminal_mode == :linearized_stable_manifold && seed_z !== nothing
+        if use_horizon_continuation && p.T > 10.0 + 1e-12
+            progress && println("OptimalWealthTax attempting adaptive horizon continuation for linearized manifold")
+            adaptive_result, _, _ = continue_horizon_adaptive(p, steady;
+                N = N,
+                progress = progress,
+                target_T = p.T,
+                initial_T = 10.0,
+                base_step = 10.0,
+                min_step = 0.25,
+                acceptance_tolerance = 0.1,
+                terminal_mode = terminal_mode,
+                use_nested_seed = true)
+            progress && print_progress_result("adaptive linearized-manifold result", adaptive_result)
+            return adaptive_result
+        end
+
+        progress && println("OptimalWealthTax attempting direct linearized-manifold solve from state-closure seed")
+        direct_result, direct_t, direct_z = solve_collocation_problem(p, steady;
+            N = N,
+            progress = progress,
+            initial_t = seed_t,
+            initial_z = seed_z,
+            use_mesh_continuation = false,
+            terminal_mode = terminal_mode)
+        if direct_result.success
+            progress && print_progress_result("linearized-manifold direct solve", direct_result)
+            return direct_result
+        end
+        progress && print_progress_result("linearized-manifold direct solve failed", direct_result)
+
+        failed_target_attempts = CollocationResult[direct_result]
+        if use_bvp_refinement
+            push!(failed_target_attempts, solve_bvp_problem(p, steady;
+                N = N,
+                progress = progress,
+                initial_t = direct_t,
+                initial_z = direct_z,
+                terminal_mode = terminal_mode))
+        end
+
+        best_result = reduce(better_target_result, failed_target_attempts)
+        progress && print_progress_result("best linearized-manifold result", best_result)
+        return best_result
     end
 
     steady_params = with_initial_conditions(p, steady.k, q_anchor; Λ20 = steady.Λ2)
@@ -2841,12 +3139,13 @@ function solve_collocation(p::ModelParams = ModelParams(); N::Int = p.N, progres
     failed_target_attempts = CollocationResult[]
 
     progress && println("OptimalWealthTax attempting direct target solve")
+    direct_use_mesh_continuation = !(terminal_mode == :linearized_stable_manifold && seed_z !== nothing)
     direct_result, direct_t, direct_z = solve_collocation_problem(p, steady;
         N = N,
         progress = progress,
         initial_t = seed_t,
         initial_z = seed_z,
-        use_mesh_continuation = true,
+        use_mesh_continuation = direct_use_mesh_continuation,
         terminal_mode = terminal_mode)
     if direct_result.success
         progress && print_progress_result("direct target solve", direct_result)

@@ -4,6 +4,7 @@ using BoundaryValueDiffEq
 using DifferentialEquations
 using ForwardDiff
 using Ipopt
+using LinearAlgebra
 using NLsolve
 using Parameters
 
@@ -14,7 +15,7 @@ include("OptimalWealthTax/solver.jl")
 include("OptimalWealthTax/visualization.jl")
 
 export ModelParams
-export SteadyStateResult, find_steady_state
+export SteadyStateResult, find_steady_state, steady_state_linearization
 export CollocationResult, solve_collocation, solve_shooting, solve_multiple_shooting
 export continue_horizon_stages, solve_collocation_staged_horizon
 export refine_with_bvp, compare_solution_paths
