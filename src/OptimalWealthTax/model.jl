@@ -78,53 +78,6 @@ end
 
 smooth_fischer_burmeister(a, b, ε) = sqrt(a^2 + b^2 + 2.0 * ε^2) - a - b
 
-function clamp_feasible_r_tilde(y::AbstractVector{<:Real}, p::ModelParams, r_tilde::Real)
-    base = control_reconstruction_terms(y, p)
-    if base === nothing || !isfinite(r_tilde)
-        return NaN
-    end
-
-    if base.resource_term <= p.min_positive
-        return 0.0
-    end
-
-    r_upper = max((base.resource_term - p.min_positive) / base.sum_eff, 0.0)
-    return clamp(r_tilde, 0.0, r_upper)
-end
-
-function controls_from_r_tilde(y::AbstractVector{<:Real}, p::ModelParams, r_tilde::Real)
-    base = control_reconstruction_terms(y, p)
-    if base === nothing || !isfinite(r_tilde) || r_tilde < 0.0
-        return nothing
-    end
-
-    x = base.resource_term - base.sum_eff * r_tilde
-    if !isfinite(x) || x <= p.min_positive
-        return nothing
-    end
-
-    return (; r_tilde = Float64(r_tilde), x, F = base.F, Fk = base.Fk, Fn = base.Fn, Fkk = base.Fkk, Fnk = base.Fnk)
-end
-
-function control_complementarity_residual(y::AbstractVector{<:Real}, p::ModelParams, r_tilde::Real)
-    base = control_reconstruction_terms(y, p)
-    if base === nothing || !isfinite(r_tilde) || r_tilde < 0.0
-        return NaN
-    end
-
-    controls = controls_from_r_tilde(y, p, r_tilde)
-    if controls === nothing
-        return NaN
-    end
-
-    multiplier, _ = control_multiplier(base, r_tilde, p)
-    if !isfinite(multiplier)
-        return NaN
-    end
-
-    return smooth_fischer_burmeister(r_tilde, multiplier, max(p.control_complementarity_smoothing, 0.0))
-end
-
 function complementarity_implied_control(base, p::ModelParams)
     if !(isfinite(base.resource_term) && isfinite(base.sum_eff) && isfinite(base.denom))
         return nothing
@@ -237,10 +190,8 @@ Output:
 - Returns a `Vector{Float64}` of length 6 containing `(dk, dc, dq, dΛ1, dΛ2, dΛ3)`.
 - If the controls are not numerically defined, it returns a vector of six `NaN` values.
 """
-function dynamics(y::AbstractVector{<:Real}, p::ModelParams; active_bound::Union{Nothing, Bool} = nothing, r_override = nothing)
-    controls = r_override === nothing ?
-        foc_implied_controls(y, p; active_bound = active_bound) :
-        controls_from_r_tilde(y, p, r_override)
+function dynamics(y::AbstractVector{<:Real}, p::ModelParams; active_bound::Union{Nothing, Bool} = nothing)
+    controls = foc_implied_controls(y, p; active_bound = active_bound)
     if controls === nothing
         return fill(NaN, 6)
     end

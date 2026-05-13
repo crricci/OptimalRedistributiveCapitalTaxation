@@ -322,10 +322,7 @@ function with_initial_conditions(p::ModelParams, k0::Real, q0::Real; Λ20::Real 
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
         n = p.n, l = p.l, k0 = Float64(k0), q0 = Float64(q0), Λ20 = Float64(Λ20), T = p.T, N = p.N,
     max_iter = p.max_iter, residual_tolerance = p.residual_tolerance, mesh_power = p.mesh_power,
-    min_positive = p.min_positive, control_kkt_mode = p.control_kkt_mode,
-    control_bound_smoothing = p.control_bound_smoothing,
-    control_complementarity_smoothing = p.control_complementarity_smoothing,
-    active_set_iterations = p.active_set_iterations)
+    min_positive = p.min_positive)
 end
 
 """
@@ -348,11 +345,8 @@ Output:
 function with_horizon(p::ModelParams, T::Real, N::Integer)
     return ModelParams(A = p.A, θ = p.θ, η = p.η, β = p.β, ρ = p.ρ, δ = p.δ, γ = p.γ,
         n = p.n, l = p.l, k0 = p.k0, q0 = p.q0, Λ20 = p.Λ20, T = Float64(T), N = Int(N),
-    max_iter = p.max_iter, residual_tolerance = p.residual_tolerance, mesh_power = p.mesh_power,
-    min_positive = p.min_positive, control_kkt_mode = p.control_kkt_mode,
-    control_bound_smoothing = p.control_bound_smoothing,
-    control_complementarity_smoothing = p.control_complementarity_smoothing,
-    active_set_iterations = p.active_set_iterations)
+        max_iter = p.max_iter, residual_tolerance = p.residual_tolerance, mesh_power = p.mesh_power,
+        min_positive = p.min_positive)
 end
 
 """
@@ -851,189 +845,6 @@ function evaluate_candidate(z::AbstractVector, p::ModelParams, steady::SteadySta
     return unpack_solution(z, p, steady, tgrid, resnorm, actual_success)
 end
 
-explicit_control_node_offset(i::Int) = 7 * (i - 1)
-
-function explicit_control_node_slice(z::AbstractVector, i::Int)
-    offset = explicit_control_node_offset(i)
-    return @view z[offset + 1:offset + 7]
-end
-
-function pack_explicit_control_seed(reference::CollocationResult, p::ModelParams)
-    N = length(reference.t)
-    z = zeros(7 * N)
-    for i in 1:N
-        offset = explicit_control_node_offset(i)
-        z[offset + 1] = reference.k[i]
-        z[offset + 2] = reference.c[i]
-        z[offset + 3] = reference.q[i]
-        z[offset + 4] = reference.Λ1[i]
-        z[offset + 5] = reference.Λ2[i]
-        z[offset + 6] = reference.Λ3[i]
-        if isfinite(reference.r_tilde[i]) && reference.r_tilde[i] >= 0.0
-            z[offset + 7] = reference.r_tilde[i]
-        else
-            controls = foc_implied_controls([reference.k[i], reference.c[i], reference.q[i], reference.Λ1[i], reference.Λ2[i], reference.Λ3[i]], p)
-            z[offset + 7] = controls === nothing ? 0.0 : controls.r_tilde
-        end
-    end
-    return z
-end
-
-function explicit_control_path_is_admissible(z::AbstractVector, p::ModelParams)
-    for node in 1:div(length(z), 7)
-        values = explicit_control_node_slice(z, node)
-        y = values[1:6]
-        r_tilde = values[7]
-        if !state_path_is_admissible(y, p) || controls_from_r_tilde(y, p, r_tilde) === nothing
-            return false
-        end
-    end
-    return true
-end
-
-function unpack_explicit_control_solution(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, residual_norm::Real, success::Bool)
-    N = length(tgrid)
-    k = zeros(N)
-    c = zeros(N)
-    q = zeros(N)
-    Λ1 = zeros(N)
-    Λ2 = zeros(N)
-    Λ3 = zeros(N)
-    r_tilde = zeros(N)
-    x = zeros(N)
-
-    for i in 1:N
-        values = explicit_control_node_slice(z, i)
-        k[i], c[i], q[i], Λ1[i], Λ2[i], Λ3[i], r_tilde[i] = values
-        controls = controls_from_r_tilde(values[1:6], p, values[7])
-        x[i] = controls === nothing ? NaN : controls.x
-    end
-
-    path_is_admissible = explicit_control_path_is_admissible(z, p)
-    effective_success = success && path_is_admissible
-    effective_residual_norm = path_is_admissible ? Float64(residual_norm) : Inf
-    return CollocationResult(effective_success, collect(tgrid), k, c, q, Λ1, Λ2, Λ3, r_tilde, x, steady, effective_residual_norm)
-end
-
-function explicit_control_residual!(residual, z, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector;
-    terminal_mode::Symbol = :steady_state,
-    terminal_alpha::Float64 = 1.0)
-    N = length(tgrid)
-    fill!(residual, 0.0)
-    idx = 1
-    initial_scales = (
-        max(abs(p.k0), 1.0),
-        max(abs(p.q0), 1.0),
-        max(abs(p.Λ20), 1.0),
-    )
-    scales = (
-        max(abs(p.k0), abs(steady.k), 1.0),
-        max(abs(steady.c), 1.0),
-        max(abs(p.q0), abs(steady.q), 1.0),
-        max(abs(steady.Λ1), 1.0),
-        max(abs(p.Λ20), abs(steady.Λ2), 1.0),
-        max(abs(steady.Λ3), 1.0),
-    )
-    control_scale = max(abs(p.ρ), 1.0)
-
-    y0 = explicit_control_node_slice(z, 1)
-    residual[idx] = (y0[1] - p.k0) / initial_scales[1]
-    idx += 1
-    residual[idx] = (y0[3] - p.q0) / initial_scales[2]
-    idx += 1
-    residual[idx] = (y0[5] - p.Λ20) / initial_scales[3]
-    idx += 1
-
-    for i in 1:N-1
-        node_i = explicit_control_node_slice(z, i)
-        node_j = explicit_control_node_slice(z, i + 1)
-        yi = collect(node_i[1:6])
-        yj = collect(node_j[1:6])
-        ri = node_i[7]
-        rj = node_j[7]
-        fi = dynamics(yi, p; r_override = ri)
-        fj = dynamics(yj, p; r_override = rj)
-        h = tgrid[i + 1] - tgrid[i]
-        if !(all(isfinite, fi) && all(isfinite, fj))
-            residual[idx:idx + 5] .= 1e6
-            idx += 6
-            continue
-        end
-        ymid = similar(yi)
-        for j in 1:6
-            ymid[j] = 0.5 * (yi[j] + yj[j]) - 0.125 * h * (fj[j] - fi[j])
-        end
-        rmid = clamp_feasible_r_tilde(ymid, p, 0.5 * (ri + rj))
-        fmid = dynamics(ymid, p; r_override = rmid)
-        if !all(isfinite, fmid)
-            residual[idx:idx + 5] .= 1e6
-            idx += 6
-            continue
-        end
-        for j in 1:6
-            residual[idx] = (yj[j] - yi[j] - (h / 6.0) * (fi[j] + 4.0 * fmid[j] + fj[j])) / scales[j]
-            idx += 1
-        end
-    end
-
-    yT = collect(explicit_control_node_slice(z, N)[1:6])
-    terminal_residuals!(residual, idx, yT, p, steady, scales, tgrid[end], terminal_mode; terminal_alpha = terminal_alpha)
-    idx += 3
-
-    for i in 1:N
-        node = explicit_control_node_slice(z, i)
-        stationarity = control_complementarity_residual(node[1:6], p, node[7])
-        residual[idx] = isfinite(stationarity) ? stationarity / control_scale : 1e6
-        idx += 1
-    end
-
-    return nothing
-end
-
-function evaluate_explicit_control_candidate(z::AbstractVector, p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector;
-    success::Bool = false,
-    terminal_mode::Symbol = :steady_state,
-    terminal_alpha::Float64 = 1.0)
-    residual = zeros(length(z))
-    explicit_control_residual!(residual, z, p, steady, tgrid; terminal_mode = terminal_mode, terminal_alpha = terminal_alpha)
-    resnorm = maximum(abs.(residual))
-    actual_success = success && isfinite(resnorm) && resnorm <= p.residual_tolerance
-    return unpack_explicit_control_solution(z, p, steady, tgrid, resnorm, actual_success)
-end
-
-function refine_with_explicit_control(reference::CollocationResult, p::ModelParams;
-    progress::Bool = true,
-    terminal_mode::Symbol = :state_steady_state)
-    tgrid = reference.t
-    steady = reference.steady
-    guess = pack_explicit_control_seed(reference, p)
-    residual!(F, z) = explicit_control_residual!(F, z, p, steady, tgrid; terminal_mode = terminal_mode)
-
-    F = zeros(length(guess))
-    residual!(F, guess)
-    progress && println("OptimalWealthTax explicit-control refinement")
-    progress && println("  initial residual=$(maximum(abs.(F)))")
-
-    nls = solve_nonlinear_system(residual!, guess, p;
-        show_trace = progress,
-        node_dim = 7,
-        node_lower_bounds = Dict(1 => p.min_positive, 2 => p.min_positive, 3 => 0.0, 7 => 0.0))
-    z = nls === nothing ? guess : nls.zero
-    refined = evaluate_explicit_control_candidate(z, p, steady, tgrid;
-        success = nls !== nothing,
-        terminal_mode = terminal_mode)
-    verification = compare_solution_paths(reference, refined)
-    max_change = maximum(values(verification.max_normalized_change))
-    preserved_reference = max_change <= 1e-12
-
-    if progress
-        println("  refined residual=$(refined.residual_norm)")
-        println("  preserved reference path=$(preserved_reference)")
-    end
-
-    return (; reference, refined, verification, preserved_reference)
-end
-
 function solve_active_set_stage(p::ModelParams, steady::SteadyStateResult, tgrid::AbstractVector, guess::AbstractVector;
     progress::Bool = true,
     terminal_mode::Symbol = :steady_state,
@@ -1108,18 +919,16 @@ function collocation_objective(residual!, z::AbstractVector)
     return total
 end
 
-function solve_nonlinear_system(residual!, guess, p::ModelParams; show_trace::Bool = false, node_dim::Int = 6, node_lower_bounds = nothing)
+function solve_nonlinear_system(residual!, guess, p::ModelParams; show_trace::Bool = false)
     try
         n = length(guess)
         m = n
         x_L = fill(-Inf, n)
         x_U = fill(Inf, n)
-        lower_bounds = node_lower_bounds === nothing ? Dict(1 => p.min_positive, 2 => p.min_positive, 3 => 0.0) : node_lower_bounds
-        for node in 1:div(n, node_dim)
-            offset = node_dim * (node - 1)
-            for (var_idx, bound) in lower_bounds
-                x_L[offset + var_idx] = bound
-            end
+        for node in 1:div(n, 6)
+            x_L[node_offset(node) + 1] = p.min_positive
+            x_L[node_offset(node) + 2] = p.min_positive
+            x_L[node_offset(node) + 3] = 0.0
         end
 
         residual_map = let residual! = residual!
