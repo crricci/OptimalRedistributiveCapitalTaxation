@@ -1,32 +1,25 @@
 # Optimal Redistributive Capital Taxation (ORCT) – Numerical tools
 
-Julia code to compute steady states, solve dynamic PMP systems, assess stability, and run welfare scans across γ. Plots are saved and not shown on screen.
+This repository now keeps only two active paths:
+
+- `NoWealthTaxation`: the legacy 4D no-wealth-tax problem.
+- `OptimalWealthTaxationReduced`: the new reduced method we are currently developing.
+
+The old collocation-based `OptimalWealthTax` branch has been removed.
 
 ## Project layout
 
-- `src/` – all Julia sources.
 - `src/NoWealthTaxation/` – legacy 4D model implementation.
-- `src/OptimalWealthTax/` – new 6D PMP model implementation.
-- `outputs/` – generated CSV and PNG files. The default runners write to model-specific subfolders here.
-- `main.jl` – root entrypoint that activates the project, loads the sources from `src/`, and exposes the two public solve functions.
-- `Project.toml` and `Manifest.toml` – Julia environment definition.
+- `src/NoWealthTaxation.jl` – module wrapper for the legacy model.
+- `src/NoWealthTaxationRun.jl` – runner for the legacy model.
+- `src/NoWealthTaxationTools.jl` – legacy diagnostics and scan helpers.
+- `src/follower_best_response.jl` – analytical follower best response used by the reduced wealth-tax solver.
+- `src/OptimalWealthTaxationReducedRun.jl` – reduced wealth-tax solver based on a direct NLP over the control path.
+- `outputs/no_wealth_taxation/` – default output directory for the legacy model.
+- `outputs/optimal_wealth_taxation_reduced/` – default output directory for the reduced wealth-tax solver.
+- `main.jl` – root entrypoint exposing `solveNoWealthTaxation` and `solveReducedOptimalWealthTaxation`.
 
-## Problem split
-
-The repository now contains two isolated problem definitions.
-
-- `src/NoWealthTaxation.jl` – legacy model namespace. It wraps the source files in `src/NoWealthTaxation/` without changing the original numerical method.
-- `src/OptimalWealthTax.jl` – new model namespace for the 6D PMP system \((k,c,q,\Lambda_1,\Lambda_2,\Lambda_3)\). The current implementation contains a direct-collocation solver on a trapezoidal mesh plus an analytical interior steady state implied by the Cobb-Douglas specification.
-- `main.jl` – root entrypoint exposing `solveNoWealthTaxation` and `solveOptimalWealthTaxation`.
-
-## Legacy contents
-
-- `src/NoWealthTaxation/parameters.jl` – legacy parameter struct and defaults
-- `src/NoWealthTaxation/steady_state.jl` – legacy analytical steady state (\(\tilde r^* = \rho\)) used as an initial reference
-- `src/NoWealthTaxation/solver.jl` – legacy 4D ODE in (k, c, λ, μ) with complementarity on \(\tilde r\); shooting + BVP, diagnostics
-- `src/NoWealthTaxation/visualization.jl` – legacy save-only plotting (`plot_main_solution`, `plot_welfare_vs_gamma`)
-
-## Current dynamic system (4D with complementarity)
+## NoWealthTaxation dynamic system
 
 We now solve the full 4–dimensional system in the variables \((k,c,\lambda,\mu)\) with an endogenous effective return \(\tilde r\) subject to a non–negativity (complementarity) condition:
 
@@ -109,22 +102,15 @@ julia --project=. main.jl
 
 Default output directory: `outputs/no_wealth_taxation/`.
 
-Run the new optimal-wealth-tax solver:
+Run the reduced optimal-wealth-tax solver:
 
 ```julia
-julia --project=. -e 'include("main.jl"); solveOptimalWealthTaxation()'
+julia --project=. -e 'include("main.jl"); solveReducedOptimalWealthTaxation()'
 ```
 
-Default output directory: `outputs/optimal_wealth_taxation/`.
+Default output directory: `outputs/optimal_wealth_taxation_reduced/`.
 
-Default runner configuration for the optimal-wealth-tax problem uses a longer finite horizon and a denser mesh:
-
-- `T = 120`
-- `N = 81`
-- `max_iter = 1800`
-- terminal closure `terminal_mode = :state_steady_state`, which enforces `k(T)=k*`, `q(T)=q*`, and `c(T)=c*`
-
-The saved optimal-tax CSV now also contains the transversality diagnostics along the path (`tvc_k`, `tvc_c`, `tvc_q`), and the summary CSV records the terminal TVC values together with the terminal state and the steady-state targets.
+The reduced solver optimizes directly over the discretized path of `r_tilde`, reconstructs the follower response analytically, and integrates the leader states forward.
 
 Welfare scan over γ (saves CSV, no plots):
 
@@ -153,7 +139,7 @@ julia --project=. -e 'include("main.jl"); steady_linearization_eigs_kclm()'    #
 ## Dependencies
 
 - Julia: tested with 1.12
-- Packages (direct): DifferentialEquations, BoundaryValueDiffEq, NLsolve, Parameters, PyPlot
+- Packages (direct): DifferentialEquations, BoundaryValueDiffEq, NLsolve, Parameters, PyPlot, JuMP, Ipopt, ForwardDiff
 - Standard library: DelimitedFiles, LinearAlgebra, Statistics, Pkg
 
 Setup:

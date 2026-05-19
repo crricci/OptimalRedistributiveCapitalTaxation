@@ -105,7 +105,7 @@ Output:
 """
 function test_steady_state_invariance(p::NoWealthTaxation.ModelParams; T = 50.0)
     ss = NoWealthTaxation.SteadyState.find_steady_state(p)
-    pSS = NoWealthTaxation.ModelParams(A = p.A, θ = p.θ, η = p.η, ρ = p.ρ, β = p.β, δ = p.δ, γ = p.γ, r = p.r, k0 = ss.k, T = p.T)
+    pSS = NoWealthTaxation.ModelParams(A = p.A, θ = p.θ, η = p.η, ρ = p.ρ, β = p.β, δ = p.δ, γ = p.γ, k0 = ss.k, T = p.T)
     try
         result = NoWealthTaxation.solve_orct(pSS)
         R = compute_residuals(pSS, result)
@@ -137,7 +137,7 @@ function test_perturbations(p::NoWealthTaxation.ModelParams; factors = [0.9, 1.1
     ss = NoWealthTaxation.SteadyState.find_steady_state(p)
     for α in factors
         println("\n--- Perturbation α=$(α) ---")
-        pα = NoWealthTaxation.ModelParams(A = p.A, θ = p.θ, η = p.η, ρ = p.ρ, β = p.β, δ = p.δ, γ = p.γ, r = p.r, k0 = α * ss.k, T = p.T)
+        pα = NoWealthTaxation.ModelParams(A = p.A, θ = p.θ, η = p.η, ρ = p.ρ, β = p.β, δ = p.δ, γ = p.γ, k0 = α * ss.k, T = p.T)
         try
             res = NoWealthTaxation.solve_orct(pα)
             println("Success=$(res.success) final k=$(res.k[end])")

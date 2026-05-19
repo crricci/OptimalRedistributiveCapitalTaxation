@@ -51,12 +51,9 @@ function analytic_steady_state(p)
     end
     λ = (γ/x) * T / S
     μ = (c^(-β) - λ)/ρ
-    fnames = fieldnames(typeof(p))
-    tau_k = 0.0
-    if (:r in fnames) && (:δ in fnames)
-        denom = (p.r - p.δ)
-        tau_k = abs(denom) > 1e-12 ? (1.0 - r_tilde / denom) : 0.0
-    end
+    gross_return = A * θ * (1 - η) * kstar^(θ - 1)
+    denom = gross_return - δ
+    tau_k = abs(denom) > 1e-12 ? (1.0 - r_tilde / denom) : 0.0
     return SteadyStateResult(kstar, c, λ, μ, r_tilde, x, tau_k)
 end
 

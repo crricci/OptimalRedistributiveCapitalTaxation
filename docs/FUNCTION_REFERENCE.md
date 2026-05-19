@@ -6,7 +6,6 @@ Conventions used below:
 
 - Scalar means a single number, typically `Float64`.
 - A path of length `N` means a vector with one entry per time node.
-- In the `OptimalWealthTax` collocation code, a flat collocation vector has length `6N` and stores `(k, c, q, Λ1, Λ2, Λ3)` at each node.
 - In the legacy `NoWealthTaxation` solver, trajectory vectors all share the same length `N = length(t)`.
 
 ## Entry Points
@@ -26,672 +25,85 @@ Output:
 - Returns a named tuple containing runner results, saved file paths, and optional scan outputs.
 - Any numerical trajectories inside the result have length determined by the underlying solver.
 
-### `solveOptimalWealthTaxation(; kwargs...)`
+### `solveReducedOptimalWealthTaxation(; kwargs...)`
 
 Purpose:
-- Public wrapper for the `OptimalWealthTax` runner.
+- Public wrapper for the reduced `OptimalWealthTaxation` runner.
 
 Inputs:
 - No positional arguments.
 
 Optional parameters:
-- `kwargs...`: forwarded to `_solveOptimalWealthTaxation`, such as `output_dir`, `progress`, `model_kwargs`, and `solve_kwargs`.
+- `kwargs...`: forwarded to `_solveReducedOptimalWealthTaxation`, such as `output_dir`, `progress`, `model_kwargs`, and continuation settings.
 
 Output:
-- Returns a named tuple with effective parameters, solve options, the solution object, and generated output paths.
-- The stored trajectories typically have length `N`.
+- Returns a named tuple with reduced-model parameters, the optimized path, and generated CSV summaries.
+- The stored trajectories have length `N`.
 
-### `x(; kwargs...)`
+## `OptimalWealthTaxationReduced`
+
+### Types and Core Helpers
+
+#### `ReducedOptimalWealthTaxParams(; kwargs...)`
 
 Purpose:
-- Legacy alias for `solveOptimalWealthTaxation`.
-
-Inputs:
-- No positional arguments.
+- Compatibility alias for the shared `ModelParams` container.
 
 Optional parameters:
-- Same as `solveOptimalWealthTaxation`.
+- See `ModelParams`; the reduced solver now uses the same shared parameter container as `NoWealthTaxation`.
 
 Output:
-- Same named tuple returned by `solveOptimalWealthTaxation`.
+- Same struct as `ModelParams`.
 
-## `OptimalWealthTax`
-
-### Types
-
-#### `ModelParams(; kwargs...)`
+#### `reduced_time_grid(p)`
 
 Purpose:
-- Stores the parameterization of the `OptimalWealthTax` model.
-
-Optional parameters:
-- `A`, `θ`, `η`, `β`, `ρ`, `δ`, `γ`, `n`, `l`: scalar model coefficients.
-- `k0`, `q0`, `Λ20`: scalar initial conditions.
-- `T`: scalar horizon.
-- `N`: number of collocation nodes.
-- `max_iter`: nonlinear solver iteration limit.
-- `residual_tolerance`: scalar tolerance on the maximum residual.
-- `mesh_power`: scalar exponent controlling front-loading of the time grid.
-- `min_positive`: scalar numerical floor.
-
-Output:
-- Immutable struct containing only scalars.
-
-#### `SteadyStateResult`
-
-Purpose:
-- Stores the steady state of the `OptimalWealthTax` model.
-
-Fields:
-- `k`, `c`, `q`, `Λ1`, `Λ2`, `Λ3`, `r_tilde`, `x`: all scalars.
-
-Output dimensions:
-- Each field has size `1 x 1`.
-
-#### `CollocationResult`
-
-Purpose:
-- Stores the output of a collocation solve.
-
-Fields:
-- `success`: scalar Boolean.
-- `t`, `k`, `c`, `q`, `Λ1`, `Λ2`, `Λ3`, `r_tilde`, `x`: vectors of common length `N`.
-- `steady`: one `SteadyStateResult`.
-- `residual_norm`: scalar.
-
-### Model and Steady State
-
-#### `production_scale(p)`
-
-Purpose:
-- Computes the scale factor of the Cobb-Douglas technology.
+- Builds the reduced solver time grid.
 
 Inputs:
-- `p::ModelParams`.
-
-Output:
-- Scalar `Float64`.
-
-#### `production_terms(k, p)`
-
-Purpose:
-- Evaluates production and derivatives at a given capital level.
-
-Inputs:
-- `k::Real`: scalar capital.
-- `p::ModelParams`.
-
-Output:
-- Named tuple with scalar fields `F`, `Fk`, `Fn`, `Fkk`, `Fnk`.
-
-#### `smooth_positive_part(z, ε)`
-
-Purpose:
-- Smooth approximation of `max(0, z)`.
-
-Inputs:
-- `z::Real`: scalar.
-- `ε::Real`: scalar smoothing parameter.
-
-Output:
-- One scalar.
-
-#### `foc_implied_controls(y, p)`
-
-Purpose:
-- Reconstructs implied controls from the first-order conditions.
-
-Inputs:
-- `y::AbstractVector{<:Real}`: uses at least the first five entries `(k, c, q, Λ1, Λ2)`.
-- `p::ModelParams`.
-
-Output:
-- Either `nothing` or a named tuple with scalar fields `r_tilde`, `x`, `F`, `Fk`, `Fn`, `Fkk`, `Fnk`.
-
-#### `dynamics(y, p)`
-
-Purpose:
-- Evaluates the six-dimensional ODE system.
-
-Inputs:
-- `y`: vector of length 6 ordered as `(k, c, q, Λ1, Λ2, Λ3)`.
-- `p::ModelParams`.
-
-Output:
-- `Vector{Float64}` of length 6.
-
-#### `find_steady_state()`
-#### `find_steady_state(p)`
-
-Purpose:
-- Computes the steady state with default or user-supplied parameters.
-
-Inputs:
-- None for the zero-argument version.
-- `p::ModelParams` for the parameterized version.
-
-Output:
-- `SteadyStateResult` containing scalar fields.
-
-### Low-Level Collocation Helpers
-
-#### `print_progress_result(label, result)`
-
-Purpose:
-- Prints a short summary of a collocation result.
-
-Inputs:
-- `label::AbstractString`.
-- `result::CollocationResult`.
-
-Output:
-- Returns `nothing`.
-
-#### `transversality_metrics(result, p)`
-
-Purpose:
-- Computes discounted transversality diagnostics along a collocation path.
-
-Inputs:
-- `result::CollocationResult` with path length `N`.
-- `p::ModelParams`.
-
-Output:
-- Named tuple with vector fields `k`, `c`, `q`, each of length `N`, plus scalar terminal values in `terminal`.
-
-#### `pack_solution(result)`
-
-Purpose:
-- Packs a structured solution into the flat vector used by the nonlinear system.
-
-Inputs:
-- `result::CollocationResult` with path length `N`.
-
-Output:
-- `Vector{Float64}` of length `6N`.
-
-#### `with_initial_conditions(p, k0, q0; Λ20=p.Λ20)`
-
-Purpose:
-- Copies a parameter object while replacing initial conditions.
-
-Inputs:
-- `p::ModelParams`.
-- `k0::Real`, `q0::Real`: scalars.
-
-Optional parameters:
-- `Λ20::Real`: scalar initial `Λ2`.
-
-Output:
-- `ModelParams` object.
-
-#### `with_horizon(p, T, N)`
-
-Purpose:
-- Copies a parameter object while replacing horizon and mesh size.
-
-Inputs:
-- `p::ModelParams`.
-- `T::Real`: scalar horizon.
-- `N::Integer`: scalar node count.
-
-Output:
-- `ModelParams` object.
-
-#### `node_offset(i)`
-
-Purpose:
-- Returns the offset of node `i` in a flat collocation vector.
-
-Inputs:
-- `i::Int`.
-
-Output:
-- Integer scalar.
-
-#### `node_slice(z, i)`
-
-Purpose:
-- Returns the six variables stored at node `i`.
-
-Inputs:
-- `z`: flat vector of length `6N`.
-- `i::Int`.
-
-Output:
-- Vector view of length 6.
-
-#### `collocation_guess_values(k, q, Λ2, steady, p)`
-
-Purpose:
-- Builds local guesses for `c`, `Λ1`, and `Λ3` at one node.
-
-Inputs:
-- `k`, `q`, `Λ2`: scalars.
-- `steady::SteadyStateResult`.
-- `p::ModelParams`.
-
-Output:
-- Three scalars `(c_guess, Λ1_guess, Λ3_guess)`.
-
-#### `collocation_guess(p, steady, tgrid)`
-
-Purpose:
-- Builds the initial flat collocation guess on a grid.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `tgrid`: vector of length `N`.
-
-Output:
-- Flat vector of length `6N`.
-
-#### `interpolate_guess(old_t, old_z, new_t)`
-
-Purpose:
-- Interpolates a flat collocation vector onto a new grid.
-
-Inputs:
-- `old_t`: vector of length `N_old`.
-- `old_z`: vector of length `6N_old`.
-- `new_t`: vector of length `N_new`.
-
-Output:
-- Flat vector of length `6N_new`.
-
-#### `interpolate_state(old_t, old_z, t)`
-
-Purpose:
-- Interpolates a single six-dimensional node state.
-
-Inputs:
-- `old_t`: vector of length `N`.
-- `old_z`: vector of length `6N`.
-- `t::Real`.
-
-Output:
-- Vector of length 6.
-
-#### `rescale_time_grid(old_t, new_T)`
-
-Purpose:
-- Rescales an existing grid to end at `new_T`.
-
-Inputs:
-- `old_t`: vector of length `N`.
-- `new_T::Real`.
+- `p::ReducedOptimalWealthTaxParams`.
 
 Output:
 - Vector of length `N`.
 
-#### `collocation_grid(p, N)`
+#### `reduced_production_terms(k, p)`
 
 Purpose:
-- Builds the front-loaded collocation time grid.
+- Evaluates reduced-form production objects at a scalar capital level.
 
 Inputs:
-- `p::ModelParams`.
-- `N::Int`.
+- `k::Real`.
+- `p::ReducedOptimalWealthTaxParams`.
 
 Output:
-- Vector of length `N`.
+- Named tuple with scalar fields `F`, `Fk`, `Fn`.
 
-#### `terminal_residual_values(yT, p, steady, scales, terminal_time, terminal_mode)`
+#### `reduced_interpolate_control_guess(old_t, old_r, new_t)`
 
 Purpose:
-- Evaluates the terminal residual block for the chosen closure rule.
+- Interpolates a control seed from one reduced grid to another.
 
 Inputs:
-- `yT`: vector of length 6.
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `scales`: tuple of six scalar normalization factors.
-- `terminal_time::Real`.
-- `terminal_mode::Symbol`.
+- `old_t`, `old_r`, `new_t`: vectors.
 
 Output:
-- Vector of length 3.
+- Vector with length `length(new_t)`.
 
-#### `terminal_residuals!(residual, idx, yT, p, steady, scales, terminal_time, terminal_mode; terminal_alpha=1.0)`
+#### `solve_reduced_optimal_wealth_taxation_stage(p; initial_r=nothing)`
 
 Purpose:
-- Writes terminal residuals in place into a larger residual vector.
+- Solves one reduced NLP stage.
 
 Inputs:
-- `residual`: vector being modified.
-- `idx::Int`: starting index.
-- `yT`: vector of length 6.
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `scales`: tuple of six scalars.
-- `terminal_time::Real`.
-- `terminal_mode::Symbol`.
-
-Optional parameters:
-- `terminal_alpha::Float64`: TVC homotopy weight.
+- `p::ReducedOptimalWealthTaxParams`.
 
 Output:
-- Returns `nothing`.
+- Named tuple with reduced-solver trajectories and diagnostics.
 
-#### `collocation_residual!(residual, z, p, steady, tgrid; terminal_mode=:steady_state, terminal_alpha=1.0)`
-
-Purpose:
-- Assembles the full collocation residual vector in place.
-
-Inputs:
-- `residual`: vector of length `6N`.
-- `z`: flat vector of length `6N`.
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `tgrid`: vector of length `N`.
-
-Optional parameters:
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-
-Output:
-- Returns `nothing`.
-
-#### `unpack_solution(z, p, steady, tgrid, residual_norm, success)`
+#### `_solveReducedOptimalWealthTaxation(; output_dir=..., progress=true, model_kwargs=(;), use_continuation=nothing, continuation_T_stages=nothing, continuation_N_stages=nothing, continuation_max_T_step=nothing, continuation_min_T_step=nothing)`
 
 Purpose:
-- Converts a flat vector into a structured `CollocationResult`.
-
-Inputs:
-- `z`: vector of length `6N`.
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `tgrid`: vector of length `N`.
-- `residual_norm::Real`: scalar.
-- `success::Bool`.
-
-Output:
-- `CollocationResult` with path length `N`.
-
-#### `evaluate_candidate(z, p, steady, tgrid; success=false, terminal_mode=:steady_state, terminal_alpha=1.0)`
-
-Purpose:
-- Recomputes the residual of a candidate and wraps it as a structured result.
-
-Inputs:
-- `z`: vector of length `6N`.
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `tgrid`: vector of length `N`.
-
-Optional parameters:
-- `success::Bool`.
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-
-Output:
-- `CollocationResult` with path length `N`.
-
-#### `solve_nonlinear_system(residual!, guess, p)`
-
-Purpose:
-- Runs `NLsolve.nlsolve` for the collocation system.
-
-Inputs:
-- `residual!`: in-place callback.
-- `guess`: vector, typically length `6N`.
-- `p::ModelParams`.
-
-Output:
-- `NLsolve` result object or `nothing` if the solve throws.
-
-### High-Level `OptimalWealthTax` Solvers
-
-#### `solve_collocation_problem(p, steady; N=p.N, progress=true, initial_t=nothing, initial_z=nothing, use_mesh_continuation=true, terminal_mode=:steady_state, terminal_alpha=1.0)`
-
-Purpose:
-- Solves one collocation problem, optionally using a coarse-to-fine mesh sequence.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `initial_t`: optional previous grid of length `N_prev`.
-- `initial_z`: optional previous flat vector of length `6N_prev`.
-- `use_mesh_continuation::Bool`.
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-
-Output:
-- Tuple `(final_result, previous_t, previous_z)`.
-- `previous_t` has length `N_last`, `previous_z` has length `6N_last`.
-
-#### `continue_horizon(p, steady; N=p.N, progress=true, target_T=p.T, terminal_mode=:steady_state, terminal_alpha=1.0)`
-
-Purpose:
-- Performs continuation in the time horizon.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `target_T::Real`.
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-
-Output:
-- Tuple `(final_result, previous_t, previous_z)`.
-
-#### `continue_horizon_stages(p, steady, T_stages; N=p.N, progress=true, terminal_mode=:steady_state, terminal_alpha=1.0)`
-
-Purpose:
-- Performs continuation over an explicit list of horizon stages.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `T_stages`: vector of length `S` containing scalar horizons.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-
-Output:
-- Tuple `(final_result, previous_t, previous_z)`.
-
-#### `solve_collocation_staged_horizon(p, T_stages; N=p.N, progress=true, terminal_mode=:state_steady_state)`
-
-Purpose:
-- Convenience wrapper around explicit staged horizon continuation.
-
-Inputs:
-- `p::ModelParams`.
-- `T_stages`: vector of stage horizons.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `terminal_mode::Symbol`.
-
-Output:
-- Tuple `(final_result, previous_t, previous_z)`.
-
-#### `solve_bvp_problem(p, steady; N=p.N, progress=true, initial_t, initial_z, terminal_mode=:steady_state)`
-
-Purpose:
-- Runs a BVP refinement solve and projects the result back to the collocation grid.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `initial_t`: seed grid of length `N_init`.
-- `initial_z`: flat seed vector of length `6N_init`.
-- `terminal_mode::Symbol`.
-
-Output:
-- `CollocationResult` with path length `N`.
-
-#### `compare_solution_paths(reference, candidate)`
-
-Purpose:
-- Compares two collocation solutions on a common grid.
-
-Inputs:
-- `reference::CollocationResult`.
-- `candidate::CollocationResult`.
-
-Output:
-- Named tuple containing scalar residuals, scalar success flags, terminal changes, and normalized path deviations.
-
-#### `refine_with_bvp(reference, p; N=length(reference.t), progress=true, terminal_mode=:state_steady_state)`
-
-Purpose:
-- Refines an existing collocation path with the BVP solver and returns verification diagnostics.
-
-Inputs:
-- `reference::CollocationResult`.
-- `p::ModelParams`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `terminal_mode::Symbol`.
-
-Output:
-- Named tuple with fields `reference`, `refined`, `verification`, and `preserved_reference`.
-
-#### `continue_initial_conditions(p, steady, previous_t, previous_z; N=p.N, progress=true, base_step=0.025, min_step=1e-4, terminal_mode=:steady_state, terminal_alpha=1.0, label, endpoint)`
-
-Purpose:
-- Performs homotopy continuation in initial conditions.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `previous_t`: grid of length `N_prev`.
-- `previous_z`: flat vector of length `6N_prev`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `base_step::Float64`.
-- `min_step::Float64`.
-- `terminal_mode::Symbol`.
-- `terminal_alpha::Float64`.
-- `label::AbstractString`.
-- `endpoint`: callable mapping `α` to `(k0, q0)` or `(k0, q0, Λ20)`.
-
-Output:
-- Tuple `(current_alpha, final_result, previous_t, previous_z)`.
-- `current_alpha` is scalar, `final_result` is a `CollocationResult`, `previous_z` has length `6N_last`.
-
-#### `continue_terminal_conditions(p, steady, previous_t, previous_z; N=p.N, progress=true, base_step=0.1, min_step=1e-5, acceptance_tolerance=...)`
-
-Purpose:
-- Performs homotopy from state-based terminal conditions to TVC conditions.
-
-Inputs:
-- `p::ModelParams`.
-- `steady::SteadyStateResult`.
-- `previous_t`: grid of length `N_prev`.
-- `previous_z`: flat vector of length `6N_prev`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `base_step::Float64`.
-- `min_step::Float64`.
-- `acceptance_tolerance`: scalar acceptance threshold.
-
-Output:
-- Tuple `(current_alpha, final_result, previous_t, previous_z)`.
-
-#### `better_target_result(lhs, rhs)`
-
-Purpose:
-- Chooses the better result between two collocation candidates.
-
-Inputs:
-- `lhs::CollocationResult`.
-- `rhs::CollocationResult`.
-
-Output:
-- One `CollocationResult`.
-
-#### `solve_collocation(p=ModelParams(); N=p.N, progress=true, use_continuation=true, use_bvp_refinement=false, use_horizon_continuation=false, terminal_mode=:state_steady_state, use_nested_seed=true)`
-
-Purpose:
-- Main high-level entry point for the `OptimalWealthTax` collocation solver.
-
-Inputs:
-- `p::ModelParams = ModelParams()`.
-
-Optional parameters:
-- `N::Int`.
-- `progress::Bool`.
-- `use_continuation::Bool`.
-- `use_bvp_refinement::Bool`.
-- `use_horizon_continuation::Bool`.
-- `terminal_mode::Symbol`.
-- `use_nested_seed::Bool`.
-
-Output:
-- One `CollocationResult`.
-- All trajectory fields have the common length of the final grid used by the solve attempt.
-
-### Plotting and Runner
-
-#### `plot_solution(result, title, filename; force=false, half=false)`
-
-Purpose:
-- Saves a nine-panel plot of the collocation solution.
-
-Inputs:
-- `result::CollocationResult` with path length `N`.
-- `title::AbstractString`.
-- `filename::AbstractString`.
-
-Optional parameters:
-- `force::Bool`.
-- `half::Bool`.
-
-Output:
-- Returns `filename` on success, `nothing` if plotting is skipped.
-
-#### `default_optimal_wealth_taxation_output_dir()`
-
-Purpose:
-- Returns the default output directory string for `OptimalWealthTax` runs.
-
-Output:
-- One path string.
-
-#### `writeOptimalWealthTaxationResultCSV(result, p, file_path)`
-
-Purpose:
-- Writes the full collocation path and TVC diagnostics to CSV.
-
-Inputs:
-- `result::CollocationResult` with path length `N`.
-- `p::ModelParams`.
-- `file_path::AbstractString`.
-
-Output:
-- Returns `file_path`.
-- Writes `N` rows and 12 columns.
-
-#### `_solveOptimalWealthTaxation(; output_dir=..., progress=true, model_kwargs=(;), solve_kwargs=(;))`
-
-Purpose:
-- Full runner: solve, save CSV, save summary CSV, and save plot.
+- Full reduced runner: solve, save trajectory CSV, save summary CSV, and save continuation-stage CSV.
 
 Inputs:
 - No positional arguments.
@@ -700,10 +112,12 @@ Optional parameters:
 - `output_dir::AbstractString`.
 - `progress::Bool`.
 - `model_kwargs::NamedTuple`.
-- `solve_kwargs::NamedTuple`.
+- `use_continuation`: optional Bool override.
+- `continuation_T_stages`, `continuation_N_stages`: optional explicit stage lists.
+- `continuation_max_T_step`, `continuation_min_T_step`: optional adaptive step controls.
 
 Output:
-- Named tuple with fields `params`, `solve_kwargs`, `result`, `solution_csv`, `plot_png`, and `summary_csv`.
+- Named tuple with fields `params`, `result`, `solution_csv`, `summary_csv`, `stages_csv`, and `stage_rows`.
 
 ## `NoWealthTaxation`
 
@@ -715,10 +129,20 @@ Purpose:
 - Parameter container for the legacy `NoWealthTaxation` model.
 
 Optional parameters:
-- `A`, `θ`, `η`, `ρ`, `β`, `δ`, `γ`, `r`, `k0`, `T`: all scalars.
+- Shared economic section: `A`, `θ`, `η`, `ρ`, `β`, `δ`, `γ`.
+- Additional economic section for `OptimalWealthTaxation`: `n`, `l`.
+- Shared state and horizon section: `k0`, `N`, `T`.
+- Additional state section for `OptimalWealthTaxation`: `q0`.
+- Numerical safeguard used by the active model families: `min_positive`.
+- Numerical parameters for `NoWealthTaxation` only: `derivative_clamp`, `solver_failure_penalty`.
+- Legacy IVP section: `ivp_abstol`, `ivp_reltol`, `ivp_dt_initial_cap`, `ivp_dt_initial_divisor`, `ivp_dtmin`, `ivp_dtmax_floor`, `ivp_dtmax_divisor`, `ivp_maxiters`.
+- Legacy shooting section: `shooting_stage_cutoff`, `shooting_stage_schedule_short`, `shooting_stage_schedule_long`, `shooting_seed_multipliers`, `shooting_initial_c_scale`, `shooting_log_floor`, `shooting_c_cap_scale`, `shooting_lambda_cap`, `shooting_xtol`, `shooting_ftol`, `shooting_iterations`, `shooting_guess_blend_old_weight`, `shooting_guess_blend_new_weight`.
+- Legacy BVP section: `bvp_abstol`, `bvp_reltol`, `bvp_dt_floor`, `bvp_dt_divisor`.
+- Legacy terminal diagnostics section: `terminal_r_tolerance`, `terminal_kdot_tolerance`, `terminal_cdot_tolerance`, `terminal_k_tolerance`, `terminal_c_tolerance`, `transversality_tolerance`.
+- Numerical parameters for `OptimalWealthTaxation` only: `max_iter`, `ipopt_print_level`, `use_continuation`, `continuation_initial_T`, `continuation_initial_N`, `continuation_max_T_step`, `continuation_min_T_step`.
 
 Output:
-- Immutable scalar-only struct.
+- Immutable struct containing scalar parameters plus fixed-size tuple schedules.
 
 #### `SteadyStateResult`
 
@@ -773,7 +197,7 @@ Optional parameters:
 Output:
 - Dictionary of scalar max and RMS norms.
 
-#### `solve_orct(p; T=p.T, N=2001, debug=false, progress=true)`
+#### `solve_orct(p; T=p.T, N=p.N, debug=false, progress=true)`
 
 Purpose:
 - Main legacy solver based on shooting continuation plus a BVP attempt.
